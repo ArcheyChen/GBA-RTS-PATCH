@@ -1,13 +1,112 @@
+#include <stdint.h>
+
 #define AGB_ROM  ((unsigned char*)0x8000000)
-	#define AGB_SRAM ((volatile unsigned char*)0xE000000)
-    #define SRAM_SIZE 64
-	#define AGB_SRAM_SIZE SRAM_SIZE*1024
-    #define SRAM_BANK_SEL (*(volatile unsigned short*) 0x09000000)
-    
-	#define _FLASH_WRITE(pa, pd) { *(((unsigned short *)AGB_ROM)+((pa)/2)) = pd; __asm("nop"); }
+#define AGB_SRAM ((volatile unsigned char*)0xE000000)
+#define SRAM_SIZE 64
+#define AGB_SRAM_SIZE SRAM_SIZE*1024
+#define SRAM_BANK_SEL (*(volatile unsigned short*) 0x09000000)
+
+#define _FLASH_WRITE(pa, pd) { *(((unsigned short *)AGB_ROM)+((pa)/2)) = pd; __asm("nop"); }
+
+// C结构体替换assembly .word指令
+typedef struct {
+    uint32_t original_entrypoint;
+    uint32_t save_size;
+    uint32_t patched_entrypoint_addr;
+} __attribute__((packed)) payload_header_t;
+
+typedef struct {
+    uint32_t identify_addr;
+    uint32_t identify_end;
+    uint32_t erase_addr;
+    uint32_t erase_end;
+    uint32_t program_addr;
+    uint32_t program_end;
+} __attribute__((packed)) flash_functions_t;
+
+// 前向声明
+void patched_entrypoint(void);
+
+// Flash函数声明
+int identify_flash_1(void);
+void erase_flash_1(unsigned sa, unsigned save_size);
+void program_flash_1(unsigned sa, unsigned save_size);
+int identify_flash_2(void);
+void erase_flash_2(unsigned sa, unsigned save_size);
+void program_flash_2(unsigned sa, unsigned save_size);
+int identify_flash_3(void);
+void erase_flash_3(unsigned sa, unsigned save_size);
+void program_flash_3(unsigned sa, unsigned save_size);
+int identify_flash_4(void);
+void erase_flash_4(unsigned sa, unsigned save_size);
+void program_flash_4(unsigned sa, unsigned save_size);
+
+// Assembly标签外部声明
+extern char identify_flash_1_end[];
+extern char erase_flash_1_end[];
+extern char program_flash_1_end[];
+extern char identify_flash_2_end[];
+extern char erase_flash_2_end[];
+extern char program_flash_2_end[];
+extern char identify_flash_3_end[];
+extern char erase_flash_3_end[];
+extern char program_flash_3_end[];
+extern char identify_flash_4_end[];
+extern char erase_flash_4_end[];
+extern char program_flash_4_end[];
+
+// Payload头部数据结构
+static const payload_header_t payload_header = {
+    .original_entrypoint = 0x080000c0,
+    .save_size = 0x20000,
+    .patched_entrypoint_addr = (uint32_t)patched_entrypoint
+};
+
+// Flash函数表结构体数组 - 与下面的assembly flash_fn_table对应
+static const flash_functions_t flash_fn_table_c[] = {
+    // Flash type 1
+    {
+        .identify_addr = (uint32_t)identify_flash_1,
+        .identify_end = (uint32_t)&identify_flash_1_end,
+        .erase_addr = (uint32_t)erase_flash_1,
+        .erase_end = (uint32_t)&erase_flash_1_end,
+        .program_addr = (uint32_t)program_flash_1,
+        .program_end = (uint32_t)&program_flash_1_end
+    },
+    // Flash type 4
+    {
+        .identify_addr = (uint32_t)identify_flash_4,
+        .identify_end = (uint32_t)&identify_flash_4_end,
+        .erase_addr = (uint32_t)erase_flash_4,
+        .erase_end = (uint32_t)&erase_flash_4_end,
+        .program_addr = (uint32_t)program_flash_4,
+        .program_end = (uint32_t)&program_flash_4_end
+    },
+    // Flash type 2
+    {
+        .identify_addr = (uint32_t)identify_flash_2,
+        .identify_end = (uint32_t)&identify_flash_2_end,
+        .erase_addr = (uint32_t)erase_flash_2,
+        .erase_end = (uint32_t)&erase_flash_2_end,
+        .program_addr = (uint32_t)program_flash_2,
+        .program_end = (uint32_t)&program_flash_2_end
+    },
+    // Flash type 3
+    {
+        .identify_addr = (uint32_t)identify_flash_3,
+        .identify_end = (uint32_t)&identify_flash_3_end,
+        .erase_addr = (uint32_t)erase_flash_3,
+        .erase_end = (uint32_t)&erase_flash_3_end,
+        .program_addr = (uint32_t)program_flash_3,
+        .program_end = (uint32_t)&program_flash_3_end
+    },
+    // 终止条目
+    {0, 0, 0, 0, 0, 0}
+};
 
 asm(R"(.text
 
+# Payload头部 - 对应C结构体 payload_header
 original_entrypoint:
     .word 0x080000c0
 save_size:
@@ -39,18 +138,8 @@ flush_sram_manual_entry:
     pop {r0}
     mov lr, r0
     pop {r0, r1, r2, r3, r4}
-# feel free to put any housekeeping before you return to your injected branch here
-    nop
-    nop
-    nop
-    nop
 
     bx lr
-
-    nop
-    nop
-    nop
-    nop
 .ltorg
 
 .arm
@@ -209,31 +298,37 @@ flush_sram_done:
 
     bx lr
     
+# Flash函数表 - 对应C结构体 flash_fn_table_c[]
 flash_fn_table:
+# Flash type 1 - flash_functions_t[0]
 .word identify_flash_1
 .word identify_flash_1_end
 .word erase_flash_1
 .word erase_flash_1_end
 .word program_flash_1
 .word program_flash_1_end
+# Flash type 4 - flash_functions_t[1]
 .word identify_flash_4
 .word identify_flash_4_end
 .word erase_flash_4
 .word erase_flash_4_end
-.word program_flash_4 
+.word program_flash_4
 .word program_flash_4_end
+# Flash type 2 - flash_functions_t[2]
 .word identify_flash_2
 .word identify_flash_2_end
 .word erase_flash_2
 .word erase_flash_2_end
 .word program_flash_2
 .word program_flash_2_end
+# Flash type 3 - flash_functions_t[3]
 .word identify_flash_3
 .word identify_flash_3_end
-.word erase_flash_3 
+.word erase_flash_3
 .word erase_flash_3_end
 .word program_flash_3
 .word program_flash_3_end
+# 终止条目 - 12 bytes of zeros - flash_functions_t[4]
 .zero 12
 
 run_from_ram:
