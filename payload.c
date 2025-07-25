@@ -1,3 +1,15 @@
+// Payload头部必须在文件开头，patcher需要
+asm(R"(.text
+
+# Payload头部 - 对应C结构体 payload_header
+original_entrypoint:
+    .word 0x080000c0
+save_size:
+    .word 0x20000
+    .word patched_entrypoint
+
+)");
+
 #include <stdint.h>
 
 #define AGB_ROM  ((unsigned char*)0x8000000)
@@ -26,6 +38,7 @@ typedef struct {
 
 // 前向声明
 void patched_entrypoint(void);
+extern void flush_sram(void);
 
 // Flash函数声明
 int identify_flash_1(void);
@@ -104,43 +117,23 @@ static const flash_functions_t flash_fn_table_c[] = {
     {0, 0, 0, 0, 0, 0}
 };
 
-asm(R"(.text
+// C语言版本的手动SRAM刷新函数
+void __attribute__((target("thumb"))) flush_sram_manual_entry(void) {
+    // IME寄存器 - Interrupt Master Enable Register (0x04000208)
+    volatile uint16_t *ime_reg = (volatile uint16_t*)0x04000208;
+    
+    // 保存当前中断状态并禁用中断
+    uint16_t old_ime = *ime_reg;
+    *ime_reg = 0;
+    
+    // 调用flush_sram函数 (编译器会自动处理Thumb→ARM模式切换)
+    flush_sram();
+    
+    // 恢复中断状态
+    *ime_reg = old_ime;
+}
 
-# Payload头部 - 对应C结构体 payload_header
-original_entrypoint:
-    .word 0x080000c0
-save_size:
-    .word 0x20000
-    .word patched_entrypoint
-
-.thumb
-# If you are writing a manual batteryless save patch, you can branch here
-# Return via LR, only LR is trashed
-
-.type flush_sram_manual_entry, %function
-flush_sram_manual_entry:
-    push {r0, r1, r2, r3, r4}
-    push {lr}
-
-    ldr r4, =0x04000208
-    ldrh r0, [r4]
-    push {r0}
-    mov r0, # 0
-    strh r0, [r4]
-
-    adr r0, flush_sram
-    mov lr, pc
-    bx r0
-
-    pop {r0}
-    strh r0, [r4]
-
-    pop {r0}
-    mov lr, r0
-    pop {r0, r1, r2, r3, r4}
-
-    bx lr
-.ltorg
+asm(R"(
 
 .arm
 patched_entrypoint:
