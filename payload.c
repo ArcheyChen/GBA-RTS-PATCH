@@ -102,50 +102,49 @@ __attribute__((naked, target("arm"))) void patched_entrypoint(void)
     );
 }
 
-asm(R"(
 
-.arm
-)");
-
-// keypad_irq_handler - 用naked function改造 (ARM模式)
-// IRQ handlers are called with 0x04000000 in r0 which is handy!
-__attribute__((naked, target("arm"))) void keypad_irq_handler(void)
+// C语言版本的按键中断处理程序
+__attribute__((target("arm"))) void keypad_irq_handler(void)
 {
-    asm volatile(
-        "@ Check keypad register for L+R+START+SELECT\n"
-        "@ May need to be changed to ldrh\n"
-        "ldr r3, [r0, # 0x130]\n"
-        "teq r3, # 0xf3\n"
-        "ldrne pc, [r0, # - 12]\n"
-        
-        "@ Enable green swap\n"
-        "mov r1, # 1\n"
-        "strh r1, [r0, # 2]\n"
-        
-        "@ Switch to system mode to get lots of stack\n"
-        "mov r3, # 0x9f\n"
-        "msr cpsr, r3\n"
-        
-        "push {lr}\n"
-        "bl flush_sram\n"
-        "pop {lr}\n"
-        
-        "@ return to irq mode\n"
-        "mov r3, # 0x92\n"
-        "msr cpsr, r3\n"
-        
-        "@ Disable green swap\n"
-        "mov r0, # 0x04000000\n"
-        "strh r0, [r0, # 2]\n"
-        
-        "@ Wait until keypad register is no longer L+R+START+SELECT\n"
-        "ldr r3, [r0, # 0x130]\n"
-        "teq r3, # 0xf3\n"
-        "beq (.-8)\n"
-        
-        "ldr pc, [r0, # - 12]\n"
-        ::: "memory"
-    );
+    // 修正：原始IRQ处理程序地址应该是0x03FFFFF4 (0x04000000-12)
+    volatile uint32_t *original_irq_handler = (volatile uint32_t*)0x03FFFFF4;
+    
+    // 检查按键寄存器 (KEYINPUT: 0x04000130)
+    // L+R+START+SELECT 组合键值为 0xf3
+    volatile uint32_t *keypad_reg = (volatile uint32_t*)0x04000130;
+    if (*keypad_reg != 0xf3) {
+        // 如果不是目标按键组合，跳转到原始中断处理程序
+        void (*original_handler)(void) = (void (*)(void))(*original_irq_handler);
+        original_handler();
+        return;
+    }
+    
+    // 启用绿色交换 (GREEN_SWAP: 0x04000002)
+    volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
+    *green_swap_reg = 1;
+    
+    // 保存当前CPSR并切换到系统模式获取更多栈空间
+    uint32_t old_cpsr;
+    asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
+    asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
+    
+    // 调用SRAM刷新函数
+    flush_sram();
+    
+    // 恢复到IRQ模式
+    asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
+    
+    // 修正：禁用绿色交换时应该写入0x04000000而不是0
+    *green_swap_reg = (uint16_t)0x04000000;
+    
+    // 等待按键组合松开
+    while (*keypad_reg == 0xf3) {
+        // 空循环等待
+    }
+    
+    // 跳转到原始中断处理程序
+    void (*original_handler)(void) = (void (*)(void))(*original_irq_handler);
+    original_handler();
 }
 
 asm(R"(
@@ -330,7 +329,7 @@ int identify_flash_1()
 }
 asm("identify_flash_1_end:");
 
-void erase_flash_1(unsigned sa, unsigned save_size)
+void erase_flash_1(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xFF);
@@ -348,11 +347,11 @@ void erase_flash_1(unsigned sa, unsigned save_size)
 }
 asm("erase_flash_1_end:");
 
-void program_flash_1(unsigned sa, unsigned save_size)
+void program_flash_1(unsigned sa, unsigned _save_size)
 {    
     // Write data
     SRAM_BANK_SEL = 0;
-    for (int i=0; i<save_size; i+=2) {
+    for (unsigned i=0; i<_save_size; i+=2) {
         if (i == AGB_SRAM_SIZE)
             SRAM_BANK_SEL = 1;
         _FLASH_WRITE(sa+i, 0x40);
@@ -388,7 +387,7 @@ int identify_flash_2()
 }
 asm("identify_flash_2_end:");
 
-void erase_flash_2(unsigned sa, unsigned save_size)
+void erase_flash_2(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xF0);
@@ -408,11 +407,11 @@ void erase_flash_2(unsigned sa, unsigned save_size)
 }
 asm("erase_flash_2_end:");
 
-void program_flash_2(unsigned sa, unsigned save_size)
+void program_flash_2(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
-    for (int i=0; i<save_size; i+=2) {
+    for (unsigned i=0; i<_save_size; i+=2) {
         if (i == AGB_SRAM_SIZE)
             SRAM_BANK_SEL = 1;
         _FLASH_WRITE(0xAAA, 0xA9);
@@ -450,7 +449,7 @@ int identify_flash_3()
 }
 asm("identify_flash_3_end:");
 
-void erase_flash_3(unsigned sa, unsigned save_size)
+void erase_flash_3(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xF0);
@@ -470,11 +469,11 @@ void erase_flash_3(unsigned sa, unsigned save_size)
 }
 asm("erase_flash_3_end:");
 
-void program_flash_3(unsigned sa, unsigned save_size)
+void program_flash_3(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
-    for (int i=0; i<save_size; i+=2) {
+    for (unsigned i=0; i<_save_size; i+=2) {
         if (i == AGB_SRAM_SIZE)
             SRAM_BANK_SEL = 1;
         _FLASH_WRITE(0xAAA, 0xAA);
@@ -523,7 +522,7 @@ int identify_flash_4()
 }
 asm("identify_flash_4_end:");
 
-void erase_flash_4(unsigned sa, unsigned save_size)
+void erase_flash_4(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xFF);
@@ -545,10 +544,10 @@ void erase_flash_4(unsigned sa, unsigned save_size)
 }
 asm("erase_flash_4_end:");
 
-void program_flash_4(unsigned sa, unsigned save_size)
+void program_flash_4(unsigned sa, unsigned )
 {
     // Write data
-    int c = 0;
+    unsigned c = 0;
     SRAM_BANK_SEL = 0;
     while (c < save_size) {
         if (c == AGB_SRAM_SIZE)
