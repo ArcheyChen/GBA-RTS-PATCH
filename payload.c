@@ -255,32 +255,41 @@ flash_fn_table:
 # 终止条目 - 12 bytes of zeros - flash_functions_t[4]
 .zero 12
 
-run_from_ram:
-    push {r4, r5, lr}
-    mov r4, sp
-    bic r2, # 1
-    
-run_from_ram_loop:    
-    ldr r5, [r3, # -4]!
-    push {r5}
-    cmp r2, r3
-    bne run_from_ram_loop
-    
-    add r2, sp, # 1
-    mov lr, pc
-    bx r2
-    
-    mov sp, r4
-    pop {r4, r5, lr}
-    bx lr
 )");
 
-// 空闲中断处理函数 - 用naked function改造
-__attribute__((naked)) void idle_irq_handler(void)
+// 空闲中断处理函数 - 用naked function改造 (ARM模式)
+__attribute__((naked, target("arm"))) void idle_irq_handler(void)
 {
     asm volatile(
         ".arm\n"
         "ldr pc, [r0, # -12]\n"
+        ".thumb\n"
+        ::: "memory"
+    );
+}
+
+// 在RAM中运行函数 - 用naked function改造 (ARM模式)
+__attribute__((naked, target("arm"))) void run_from_ram(void)
+{
+    asm volatile(
+        ".arm\n"
+        "push {r4, r5, lr}\n"
+        "mov r4, sp\n"
+        "bic r2, # 1\n"
+        
+        "run_from_ram_loop:\n"    
+        "ldr r5, [r3, # -4]!\n"
+        "push {r5}\n"
+        "cmp r2, r3\n"
+        "bne run_from_ram_loop\n"
+        
+        "add r2, sp, # 1\n"
+        "mov lr, pc\n"
+        "bx r2\n"
+        
+        "mov sp, r4\n"
+        "pop {r4, r5, lr}\n"
+        "bx lr\n"
         ".thumb\n"
         ::: "memory"
     );
