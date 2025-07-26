@@ -105,40 +105,50 @@ __attribute__((naked, target("arm"))) void patched_entrypoint(void)
 asm(R"(
 
 .arm
-# IRQ handlers are called with 0x04000000 in r0 which is handy!
-keypad_irq_handler:
-    # Check keypad register for L+R+START+SELECT
-    # May need to be changed to ldrh
-    ldr r3, [r0, # 0x130]
-    teq r3, # 0xf3
-    ldrne pc, [r0, # - 12]
-    
-    # Enable green swap
-    mov r1, # 1
-    strh r1, [r0, # 2]
-    
-    # Switch to system mode to get lots of stack
-    mov r3, # 0x9f
-    msr cpsr, r3
-    
-    push {lr}
-    bl flush_sram
-    pop {lr}
+)");
 
-    # return to irq mode
-    mov r3, # 0x92
-    msr cpsr, r3
-    
-    # Disable green swap
-    mov r0, # 0x04000000
-    strh r0, [r0, # 2]
-    
-    # Wait until keypad register is no longer L+R+START+SELECT
-    ldr r3, [r0, # 0x130]
-    teq r3, # 0xf3
-    beq (.-8)
-    
-    ldr pc, [r0, # - 12]
+// keypad_irq_handler - 用naked function改造 (ARM模式)
+// IRQ handlers are called with 0x04000000 in r0 which is handy!
+__attribute__((naked, target("arm"))) void keypad_irq_handler(void)
+{
+    asm volatile(
+        "@ Check keypad register for L+R+START+SELECT\n"
+        "@ May need to be changed to ldrh\n"
+        "ldr r3, [r0, # 0x130]\n"
+        "teq r3, # 0xf3\n"
+        "ldrne pc, [r0, # - 12]\n"
+        
+        "@ Enable green swap\n"
+        "mov r1, # 1\n"
+        "strh r1, [r0, # 2]\n"
+        
+        "@ Switch to system mode to get lots of stack\n"
+        "mov r3, # 0x9f\n"
+        "msr cpsr, r3\n"
+        
+        "push {lr}\n"
+        "bl flush_sram\n"
+        "pop {lr}\n"
+        
+        "@ return to irq mode\n"
+        "mov r3, # 0x92\n"
+        "msr cpsr, r3\n"
+        
+        "@ Disable green swap\n"
+        "mov r0, # 0x04000000\n"
+        "strh r0, [r0, # 2]\n"
+        
+        "@ Wait until keypad register is no longer L+R+START+SELECT\n"
+        "ldr r3, [r0, # 0x130]\n"
+        "teq r3, # 0xf3\n"
+        "beq (.-8)\n"
+        
+        "ldr pc, [r0, # - 12]\n"
+        ::: "memory"
+    );
+}
+
+asm(R"(
 
 
 
