@@ -261,9 +261,7 @@ flash_fn_table:
 __attribute__((naked, target("arm"))) void idle_irq_handler(void)
 {
     asm volatile(
-        ".arm\n"
         "ldr pc, [r0, # -12]\n"
-        ".thumb\n"
         ::: "memory"
     );
 }
@@ -272,7 +270,6 @@ __attribute__((naked, target("arm"))) void idle_irq_handler(void)
 __attribute__((naked, target("arm"))) void run_from_ram(void)
 {
     asm volatile(
-        ".arm\n"
         "push {r4, r5, lr}\n"
         "mov r4, sp\n"
         "bic r2, # 1\n"
@@ -290,7 +287,6 @@ __attribute__((naked, target("arm"))) void run_from_ram(void)
         "mov sp, r4\n"
         "pop {r4, r5, lr}\n"
         "bx lr\n"
-        ".thumb\n"
         ::: "memory"
     );
 }
