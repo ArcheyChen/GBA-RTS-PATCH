@@ -136,8 +136,6 @@ keypad_irq_handler:
     
     ldr pc, [r0, # - 12]
 
-idle_irq_handler:
-    ldr pc, [r0, # -12]
 
 
 # Ensure interrupts are disabled and there is plenty of stack space before calling
@@ -276,6 +274,17 @@ run_from_ram_loop:
     pop {r4, r5, lr}
     bx lr
 )");
+
+// 空闲中断处理函数 - 用naked function改造
+__attribute__((naked)) void idle_irq_handler(void)
+{
+    asm volatile(
+        ".arm\n"
+        "ldr pc, [r0, # -12]\n"
+        ".thumb\n"
+        ::: "memory"
+    );
+}
 
 int identify_flash_1()
 {
