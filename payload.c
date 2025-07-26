@@ -17,22 +17,6 @@ __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint
 
 #define _FLASH_WRITE(pa, pd) { *(((unsigned short *)AGB_ROM)+((pa)/2)) = pd; __asm("nop"); }
 
-// C结构体替换assembly .word指令
-typedef struct {
-    uint32_t original_entrypoint;
-    uint32_t save_size;
-    uint32_t patched_entrypoint_addr;
-} __attribute__((packed)) payload_header_t;
-
-typedef struct {
-    uint32_t identify_addr;
-    uint32_t identify_end;
-    uint32_t erase_addr;
-    uint32_t erase_end;
-    uint32_t program_addr;
-    uint32_t program_end;
-} __attribute__((packed)) flash_functions_t;
-
 // 前向声明
 void patched_entrypoint(void);
 extern void flush_sram(void);
@@ -65,54 +49,6 @@ extern char identify_flash_4_end[];
 extern char erase_flash_4_end[];
 extern char program_flash_4_end[];
 
-// Payload头部数据结构
-static const payload_header_t payload_header = {
-    .original_entrypoint = 0x080000c0,
-    .save_size = 0x20000,
-    .patched_entrypoint_addr = (uint32_t)patched_entrypoint
-};
-
-// Flash函数表结构体数组 - 与下面的assembly flash_fn_table对应
-static const flash_functions_t flash_fn_table_c[] = {
-    // Flash type 1
-    {
-        .identify_addr = (uint32_t)identify_flash_1,
-        .identify_end = (uint32_t)&identify_flash_1_end,
-        .erase_addr = (uint32_t)erase_flash_1,
-        .erase_end = (uint32_t)&erase_flash_1_end,
-        .program_addr = (uint32_t)program_flash_1,
-        .program_end = (uint32_t)&program_flash_1_end
-    },
-    // Flash type 4
-    {
-        .identify_addr = (uint32_t)identify_flash_4,
-        .identify_end = (uint32_t)&identify_flash_4_end,
-        .erase_addr = (uint32_t)erase_flash_4,
-        .erase_end = (uint32_t)&erase_flash_4_end,
-        .program_addr = (uint32_t)program_flash_4,
-        .program_end = (uint32_t)&program_flash_4_end
-    },
-    // Flash type 2
-    {
-        .identify_addr = (uint32_t)identify_flash_2,
-        .identify_end = (uint32_t)&identify_flash_2_end,
-        .erase_addr = (uint32_t)erase_flash_2,
-        .erase_end = (uint32_t)&erase_flash_2_end,
-        .program_addr = (uint32_t)program_flash_2,
-        .program_end = (uint32_t)&program_flash_2_end
-    },
-    // Flash type 3
-    {
-        .identify_addr = (uint32_t)identify_flash_3,
-        .identify_end = (uint32_t)&identify_flash_3_end,
-        .erase_addr = (uint32_t)erase_flash_3,
-        .erase_end = (uint32_t)&erase_flash_3_end,
-        .program_addr = (uint32_t)program_flash_3,
-        .program_end = (uint32_t)&program_flash_3_end
-    },
-    // 终止条目
-    {0, 0, 0, 0, 0, 0}
-};
 
 // C语言版本的手动SRAM刷新函数
 void __attribute__((target("thumb"))) flush_sram_manual_entry(void) {
