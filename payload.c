@@ -183,56 +183,48 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     GET_REL_ADDR(flash_fn_table, flash_fn_table_addr);
     GET_REL_ADDR(original_entrypoint, original_entry_addr);
     
-    // 第一部分：try_flash循环检测
-    uint32_t fn_table_after_identify;
-    int identify_result;
+    // 第一部分：try_flash循环检测（C语言重写）
+    uint32_t fn_table_after_identify = 0;
+    int identify_result = 0;
     
-    asm volatile(R"(
-        mov r4, %[flash_addr]
-        mov r5, %[save_size]
-        mov r6, %[fn_table]
-        mov r7, %[orig_entry]
+    uint32_t *fn_ptr = (uint32_t*)flash_fn_table_addr;
+    
+    for (int i = 0; ; i++) {
+        // 读取identify函数地址
+        uint32_t identify_start = fn_ptr[i * 6];      // identify函数起始地址
+        uint32_t identify_end = fn_ptr[i * 6 + 1];    // identify函数结束地址
         
-    try_flash:
-        ldm r6!, {r2, r3}
-        cmp r2, #0
-        beq not_found
-        add r2, r7
-        add r3, r7
-        bl run_thumb_from_ram
-        cmp r0, #0
-        bne found_flash_break
-        add r6, #16
-        b try_flash
+        // 检查是否到达表尾
+        if (identify_start == 0) {
+            identify_result = 0;
+            break;
+        }
         
-    found_flash_break:
-        mov %[result], r0
-        mov %[fn_table_out], r6
-        b end_try_flash
+        // 调用identify函数
+        identify_start += original_entry_addr;
+        identify_end += original_entry_addr;
+        identify_result = run_thumb_from_ram(0, 0, identify_start, identify_end);
         
-    not_found:
-        mov %[result], #0
-        
-    end_try_flash:
-    )"
-    : [result] "=r" (identify_result), [fn_table_out] "=r" (fn_table_after_identify)
-    : [flash_addr] "r" (flash_sector_addr), [save_size] "r" (save_size_value),
-      [fn_table] "r" (flash_fn_table_addr), [orig_entry] "r" (original_entry_addr)
-    : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory"
-    );
+        if (identify_result != 0) {
+            // 找到匹配的flash，设置函数表位置到erase函数
+            fn_table_after_identify = (uint32_t)&fn_ptr[i * 6 + 2];
+            break;
+        }
+        // 如果没找到，继续下一个条目（for循环自动递增i）
+    }
     
     // 如果找到匹配的flash，执行第二部分（C语言重写）
     if (identify_result != 0) {
-        uint32_t *fn_ptr = (uint32_t*)fn_table_after_identify;
+        uint32_t *erase_prog_ptr = (uint32_t*)fn_table_after_identify;
         
         // 读取并调用erase函数
-        uint32_t erase_start = fn_ptr[0] + original_entry_addr;
-        uint32_t erase_end = fn_ptr[1] + original_entry_addr;
+        uint32_t erase_start = erase_prog_ptr[0] + original_entry_addr;
+        uint32_t erase_end = erase_prog_ptr[1] + original_entry_addr;
         run_thumb_from_ram(flash_sector_addr, save_size_value, erase_start, erase_end);
         
         // 读取并调用program函数
-        uint32_t program_start = fn_ptr[2] + original_entry_addr;
-        uint32_t program_end = fn_ptr[3] + original_entry_addr;
+        uint32_t program_start = erase_prog_ptr[2] + original_entry_addr;
+        uint32_t program_end = erase_prog_ptr[3] + original_entry_addr;
         run_thumb_from_ram(flash_sector_addr, save_size_value, program_start, program_end);
     }
     
