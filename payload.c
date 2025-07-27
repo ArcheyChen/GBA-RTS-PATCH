@@ -155,82 +155,72 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
 
   __attribute__((target("arm"))) void flush_sram(void)
   {
-asm volatile(R"(
-    mov r0, # 0x04000000
-    # save sound state then disable it
-    ldrh r2, [r0, # 0x0080]
-    ldrh r3, [r0, # 0x0084]
-    push {r2, r3}
-    strh r0, [r0, # 0x0084]
-
-    # save DMAs state then disable them
-    ldrh r3, [r0, # 0x00BA]
-    push {r3}
-    strh r0, [r0, # 0x00BA]
-    ldrh r3, [r0, # 0x00C6]
-    push {r3}
-    strh r0, [r0, # 0x00C6]
-    ldrh r3, [r0, # 0x00d2]
-    push {r3}
-    strh r0, [r0, # 0x00d2]
-    ldrh r3, [r0, # 0x00de]
-    push {r3}
-    strh r0, [r0, # 0x00de]
+    // 硬件寄存器基地址
+    volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
     
-    # Try flushing for various flash chips
-    adrl r4, flash_save_sector
-    sub r4, # 0x08000000
-    ldr r5, save_size
-    adr r6, flash_fn_table 
-    adr r7, original_entrypoint 
+    // 保存sound状态并禁用
+    uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
+    uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_H
+    hw_base[0x0084/2] = 0;  // 禁用sound
     
-try_flash:
-
-    ldm r6!, {r2, r3}
-    cmp r2, # 0
-    beq flush_sram_done
-    add r2, r7
-    add r3, r7
-    bl run_from_ram
-    cmp r0, #0
-    bne found_flash
-    add r6, # 16
-    b try_flash
+    // 保存DMA状态并禁用
+    uint16_t dma_regs[4];
+    dma_regs[0] = hw_base[0x00BA/2];  // DMA0CNT_H
+    hw_base[0x00BA/2] = 0;
+    dma_regs[1] = hw_base[0x00C6/2];  // DMA1CNT_H
+    hw_base[0x00C6/2] = 0;
+    dma_regs[2] = hw_base[0x00D2/2];  // DMA2CNT_H
+    hw_base[0x00D2/2] = 0;
+    dma_regs[3] = hw_base[0x00DE/2];  // DMA3CNT_H
+    hw_base[0x00DE/2] = 0;
     
-found_flash:
-    ldm r6!, {r2, r3}
-    mov r0, r4
-    mov r1, r5
-    add r2, r7
-    add r3, r7
-    bl run_from_ram
-    ldm r6!, {r2, r3}
-    mov r0, r4
-    mov r1, r5
-    add r2, r7
-    add r3, r7
-    bl run_from_ram
+    // 核心flash操作逻辑（保持原始汇编）
+    asm volatile(R"(
+        # Try flushing for various flash chips
+        adrl r4, flash_save_sector
+        sub r4, # 0x08000000
+        ldr r5, save_size
+        adr r6, flash_fn_table 
+        adr r7, original_entrypoint 
+        
+    try_flash:
+        ldm r6!, {r2, r3}
+        cmp r2, # 0
+        beq flush_sram_done
+        add r2, r7
+        add r3, r7
+        bl run_from_ram
+        cmp r0, #0
+        bne found_flash
+        add r6, # 16
+        b try_flash
+        
+    found_flash:
+        ldm r6!, {r2, r3}
+        mov r0, r4
+        mov r1, r5
+        add r2, r7
+        add r3, r7
+        bl run_from_ram
+        ldm r6!, {r2, r3}
+        mov r0, r4
+        mov r1, r5
+        add r2, r7
+        add r3, r7
+        bl run_from_ram
 
-flush_sram_done:
-    mov r0, #0x04000000
-
-    # restore DMAs state
-    pop {r3}
-    strh r3, [r0, # 0x00de]
-    pop {r3}
-    strh r3, [r0, # 0x00d2]
-    pop {r3}
-    strh r3, [r0, # 0x00c6]
-    pop {r3}
-    strh r3, [r0, # 0x00ba]
-
-
-    # restore sound state
-    pop {r2, r3}
-    strh r3, [r0, # 0x0084]
-    strh r2, [r0, # 0x0080]
+    flush_sram_done:
+    )" ::: "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory");
     
-)" ::: "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory");
+    // 恢复DMA状态
+    hw_base[0x00DE/2] = dma_regs[3];
+    hw_base[0x00D2/2] = dma_regs[2];
+    hw_base[0x00C6/2] = dma_regs[1];
+    hw_base[0x00BA/2] = dma_regs[0];
+    
+    // 恢复sound状态
+    hw_base[0x0084/2] = sound_reg2;
+    hw_base[0x0080/2] = sound_reg1;
   }
     
 asm(R"(
