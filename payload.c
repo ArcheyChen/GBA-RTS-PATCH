@@ -26,7 +26,7 @@ __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint
 
 // 前向声明
 void patched_entrypoint(void);
-extern void flush_sram(void);
+void flush_sram(void);
 
 // Flash函数声明
 int identify_flash_1(void);
@@ -153,16 +153,11 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
 }
 
 
+  __attribute__((naked, target("arm"))) void flush_sram(void)
+  {
 
 
-asm(R"(
-
-
-
-# Ensure interrupts are disabled and there is plenty of stack space before calling
-flush_sram:
-#.type	flush_sram, %function
-#加了这一行东西就会炸
+asm volatile(R"(
     mov r0, # 0x04000000
     # save sound state then disable it
     ldrh r2, [r0, # 0x0080]
@@ -245,6 +240,10 @@ flush_sram_done:
 
     bx lr
     
+)");
+  }
+    
+asm(R"(
 # Flash函数表 - 对应C结构体 flash_fn_table_c[]
 flash_fn_table:
 # Flash type 1 - flash_functions_t[0]
