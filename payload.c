@@ -183,77 +183,71 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     GET_REL_ADDR(flash_fn_table, flash_fn_table_addr);
     GET_REL_ADDR(original_entrypoint, original_entry_addr);
     
-    // Flash检测循环
-    uint32_t current_fn_table = flash_fn_table_addr;
-    int flash_found = 0;
+    // 第一部分：try_flash循环检测
+    uint32_t fn_table_after_identify;
+    int identify_result;
     
-    while (!flash_found) {
-        uint32_t identify_start, identify_end;
-        int identify_result;
+    asm volatile(R"(
+        mov r4, %[flash_addr]
+        mov r5, %[save_size]
+        mov r6, %[fn_table]
+        mov r7, %[orig_entry]
         
-        // try_flash片段：检测flash类型
+    try_flash:
+        ldm r6!, {r2, r3}
+        cmp r2, #0
+        beq not_found
+        add r2, r7
+        add r3, r7
+        bl run_thumb_from_ram
+        cmp r0, #0
+        bne found_flash_break
+        add r6, #16
+        b try_flash
+        
+    found_flash_break:
+        mov %[result], r0
+        mov %[fn_table_out], r6
+        b end_try_flash
+        
+    not_found:
+        mov %[result], #0
+        
+    end_try_flash:
+    )"
+    : [result] "=r" (identify_result), [fn_table_out] "=r" (fn_table_after_identify)
+    : [flash_addr] "r" (flash_sector_addr), [save_size] "r" (save_size_value),
+      [fn_table] "r" (flash_fn_table_addr), [orig_entry] "r" (original_entry_addr)
+    : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory"
+    );
+    
+    // 如果找到匹配的flash，执行第二部分
+    if (identify_result != 0) {
+        // 第二部分：found_flash执行erase和program
         asm volatile(R"(
-            ldm %[fn_table]!, {%[id_start], %[id_end]}
-            cmp %[id_start], #0
-            beq 1f
-            add %[id_start], %[orig_entry]
-            add %[id_end], %[orig_entry]
+            mov r4, %[flash_addr]
+            mov r5, %[save_size]
+            mov r6, %[fn_table]
+            mov r7, %[orig_entry]
+            
+            ldm r6!, {r2, r3}
+            mov r0, r4
+            mov r1, r5
+            add r2, r7
+            add r3, r7
             bl run_thumb_from_ram
-            b 2f
-        1:  mov %[result], #-1    # 表示到达表尾
-        2:
+            ldm r6!, {r2, r3}
+            mov r0, r4
+            mov r1, r5
+            add r2, r7
+            add r3, r7
+            bl run_thumb_from_ram
         )"
-        : [result] "=r" (identify_result), [id_start] "=&r" (identify_start), 
-          [id_end] "=&r" (identify_end), [fn_table] "+r" (current_fn_table)
-        : [orig_entry] "r" (original_entry_addr)
-        : "r0", "r1", "r2", "r3", "lr", "memory"
+        :
+        : [flash_addr] "r" (flash_sector_addr), [save_size] "r" (save_size_value),
+          [fn_table] "r" (fn_table_after_identify), [orig_entry] "r" (original_entry_addr)
+        : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory"
         );
-        
-        // 检查结果
-        if (identify_result == -1) {
-            // 到达函数表末尾，没找到匹配的flash
-            break;
-        }
-        
-        if (identify_result != 0) {
-            // 找到匹配的flash类型，执行erase和program
-            flash_found = 1;
-            
-            uint32_t erase_start, erase_end, program_start, program_end;
-            
-            // found_flash片段：执行erase和program
-            asm volatile(R"(
-                # 读取erase函数地址
-                ldm %[fn_table]!, {%[erase_start], %[erase_end]}
-                add %[erase_start], %[orig_entry]
-                add %[erase_end], %[orig_entry]
-                mov r0, %[flash_addr]
-                mov r1, %[save_size]
-                mov r2, %[erase_start]
-                mov r3, %[erase_end]
-                bl run_thumb_from_ram
-                
-                # 读取program函数地址
-                ldm %[fn_table]!, {%[prog_start], %[prog_end]}
-                add %[prog_start], %[orig_entry]
-                add %[prog_end], %[orig_entry]
-                mov r0, %[flash_addr]
-                mov r1, %[save_size]
-                mov r2, %[prog_start]
-                mov r3, %[prog_end]
-                bl run_thumb_from_ram
-            )"
-            : [erase_start] "=&r" (erase_start), [erase_end] "=&r" (erase_end),
-              [prog_start] "=&r" (program_start), [prog_end] "=&r" (program_end),
-              [fn_table] "+r" (current_fn_table)
-            : [flash_addr] "r" (flash_sector_addr), [save_size] "r" (save_size_value),
-              [orig_entry] "r" (original_entry_addr)
-            : "r0", "r1", "r2", "r3", "lr", "memory"
-            );
-        } else {
-            // 跳过当前条目的erase和program地址（16字节）
-            current_fn_table += 16;
-        }
     }
     
     // 恢复DMA状态
