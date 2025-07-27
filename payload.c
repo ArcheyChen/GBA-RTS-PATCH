@@ -221,33 +221,19 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory"
     );
     
-    // 如果找到匹配的flash，执行第二部分
+    // 如果找到匹配的flash，执行第二部分（C语言重写）
     if (identify_result != 0) {
-        // 第二部分：found_flash执行erase和program
-        asm volatile(R"(
-            mov r4, %[flash_addr]
-            mov r5, %[save_size]
-            mov r6, %[fn_table]
-            mov r7, %[orig_entry]
-            
-            ldm r6!, {r2, r3}
-            mov r0, r4
-            mov r1, r5
-            add r2, r7
-            add r3, r7
-            bl run_thumb_from_ram
-            ldm r6!, {r2, r3}
-            mov r0, r4
-            mov r1, r5
-            add r2, r7
-            add r3, r7
-            bl run_thumb_from_ram
-        )"
-        :
-        : [flash_addr] "r" (flash_sector_addr), [save_size] "r" (save_size_value),
-          [fn_table] "r" (fn_table_after_identify), [orig_entry] "r" (original_entry_addr)
-        : "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory"
-        );
+        uint32_t *fn_ptr = (uint32_t*)fn_table_after_identify;
+        
+        // 读取并调用erase函数
+        uint32_t erase_start = fn_ptr[0] + original_entry_addr;
+        uint32_t erase_end = fn_ptr[1] + original_entry_addr;
+        run_thumb_from_ram(flash_sector_addr, save_size_value, erase_start, erase_end);
+        
+        // 读取并调用program函数
+        uint32_t program_start = fn_ptr[2] + original_entry_addr;
+        uint32_t program_end = fn_ptr[3] + original_entry_addr;
+        run_thumb_from_ram(flash_sector_addr, save_size_value, program_start, program_end);
     }
     
     // 恢复DMA状态
