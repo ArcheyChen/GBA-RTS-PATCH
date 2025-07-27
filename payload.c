@@ -43,43 +43,80 @@ __attribute__((target("thumb"))) int identify_flash_4(void);
 __attribute__((target("thumb"))) void erase_flash_4(unsigned sa, unsigned save_size);
 __attribute__((target("thumb"))) void program_flash_4(unsigned sa, unsigned save_size);
 
-// C语言版本的按键中断处理程序
+// 前向声明函数
+void load_from_flash(void);
+void copy_flash_to_sram(uint32_t flash_addr, uint32_t size);
+
+// C语言版本的按键中断处理程序  
 __attribute__((target("arm"))) void keypad_irq_handler(void)
 {
     // 修正：原始IRQ处理程序地址应该是0x03FFFFF4 (0x04000000-12)
     volatile uint32_t *original_irq_handler = (volatile uint32_t*)0x03FFFFF4;
     
     // 检查按键寄存器 (KEYINPUT: 0x04000130)
-    // L+R+START+SELECT 组合键值为 0xf3
-    volatile uint32_t *keypad_reg = (volatile uint32_t*)0x04000130;
-    if (*keypad_reg != 0xf3) {
+    volatile uint16_t *keypad_reg = (volatile uint16_t*)0x04000130;
+    uint16_t keypad_value = *keypad_reg;
+    
+    // 按键组合定义 (GBA按键反相: 按下=0, 未按下=1)
+    // L=0x200, R=0x100, START=0x08, SELECT=0x04
+    uint16_t lr_start = 0x308;   // L+R+START (存档)
+    uint16_t lr_select = 0x304;  // L+R+SELECT (读档)
+    
+    // 检查是否按下L+R+START (存档)
+    if ((keypad_value & lr_start) == 0) {
+        // 启用绿色交换 (GREEN_SWAP: 0x04000002)
+        volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
+        *green_swap_reg = 1;
+        
+        // 保存当前CPSR并切换到系统模式获取更多栈空间
+        uint32_t old_cpsr;
+        asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
+        asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
+        
+        // 调用SRAM刷新函数 (存档)
+        flush_sram();
+        
+        // 恢复到IRQ模式
+        asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
+        
+        // 禁用绿色交换
+        *green_swap_reg = 0;
+        
+        // 等待按键组合松开
+        while (((*keypad_reg) & lr_start) == 0) {
+            // 空循环等待
+        }
+    }
+    // 检查是否按下L+R+SELECT (读档)
+    else if ((keypad_value & lr_select) == 0) {
+        // 启用绿色交换 (GREEN_SWAP: 0x04000002)
+        volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
+        *green_swap_reg = 1;
+        
+        // 保存当前CPSR并切换到系统模式获取更多栈空间
+        uint32_t old_cpsr;
+        asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
+        asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
+        
+        // 调用读档函数
+        load_from_flash();
+        
+        // 恢复到IRQ模式
+        asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
+        
+        // 禁用绿色交换
+        *green_swap_reg = 0;
+        
+        // 等待按键组合松开
+        while (((*keypad_reg) & lr_select) == 0) {
+            // 空循环等待
+        }
+    }
+    else {
         // 如果不是目标按键组合，跳转到原始中断处理程序
         void (*original_handler)(void) = (void (*)(void))(*original_irq_handler);
         original_handler();
         return;
-    }
-    
-    // 启用绿色交换 (GREEN_SWAP: 0x04000002)
-    volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
-    *green_swap_reg = 1;
-    
-    // 保存当前CPSR并切换到系统模式获取更多栈空间
-    uint32_t old_cpsr;
-    asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
-    asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
-    
-    // 调用SRAM刷新函数
-    flush_sram();
-    
-    // 恢复到IRQ模式
-    asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
-    
-    // 修正：禁用绿色交换时应该写入0x04000000而不是0
-    *green_swap_reg = (uint16_t)0x04000000;
-    
-    // 等待按键组合松开
-    while (*keypad_reg == 0xf3) {
-        // 空循环等待
     }
     
     // 跳转到原始中断处理程序
@@ -103,31 +140,11 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     volatile uint32_t *irq_vector = (volatile uint32_t*)0x03FFFFFC;
     *irq_vector = irq_handler_addr;
     
-    // 初始化变量，现在可以直接用C语言指针操作
-    volatile uint8_t *flash_src = (volatile uint8_t*)flash_src_addr;
-    volatile uint8_t *sram_dst = (volatile uint8_t*)0x0E000000;
-    volatile uint8_t *sram_end = sram_dst + save_size_value;
-    volatile uint16_t *bank_reg = (volatile uint16_t*)0x09000000;
-    
     // 锁定369in1 mapper
     *(volatile uint8_t*)(0x0E000000 + 3) = 0x80;
     
-    // SRAM初始化循环
-    while (sram_dst < sram_end) {
-        // 计算当前bank (根据SRAM地址的bit 16)
-        uint16_t current_bank = ((uint32_t)sram_dst >> 16) & 1;
-        *bank_reg = current_bank;
-        
-        // 复制一个字节
-        *sram_dst = *flash_src;
-        
-        // 递增指针
-        flash_src++;
-        sram_dst++;
-    }
-    
-    // 设置bank为0（为不支持bank的软件）
-    *bank_reg = 0;
+    // 调用通用的Flash到SRAM复制函数
+    copy_flash_to_sram(flash_src_addr, save_size_value);
     
     // 跳转到原始入口点
     asm volatile(
@@ -223,6 +240,76 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     hw_base[0x0084/2] = sound_reg2;
     hw_base[0x0080/2] = sound_reg1;
   }
+
+// 通用的Flash到SRAM复制函数 - 复用patched_entrypoint中的逻辑
+__attribute__((target("arm"))) void copy_flash_to_sram(uint32_t flash_addr, uint32_t size)
+{
+    volatile uint8_t *flash_src = (volatile uint8_t*)flash_addr;
+    volatile uint8_t *sram_dst = (volatile uint8_t*)0x0E000000;
+    volatile uint8_t *sram_end = sram_dst + size;
+    volatile uint16_t *bank_reg = (volatile uint16_t*)0x09000000;
+    
+    // SRAM初始化循环 - 从patched_entrypoint复用的逻辑
+    while (sram_dst < sram_end) {
+        // 计算当前bank (根据SRAM地址的bit 16)
+        uint16_t current_bank = ((uint32_t)sram_dst >> 16) & 1;
+        *bank_reg = current_bank;
+        
+        // 复制一个字节
+        *sram_dst = *flash_src;
+        
+        // 递增指针
+        flash_src++;
+        sram_dst++;
+    }
+    
+    // 设置bank为0（为不支持bank的软件）
+    *bank_reg = 0;
+}
+
+// 读档函数 - 将Flash中的存档恢复到SRAM
+__attribute__((target("arm"))) void load_from_flash(void)
+{
+    // 硬件寄存器基地址
+    volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
+    
+    // 保存sound状态并禁用
+    uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
+    uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_H
+    hw_base[0x0084/2] = 0;  // 禁用sound
+    
+    // 保存DMA状态并禁用
+    uint16_t dma_regs[4];
+    dma_regs[0] = hw_base[0x00BA/2];  // DMA0CNT_H
+    hw_base[0x00BA/2] = 0;
+    dma_regs[1] = hw_base[0x00C6/2];  // DMA1CNT_H
+    hw_base[0x00C6/2] = 0;
+    dma_regs[2] = hw_base[0x00D2/2];  // DMA2CNT_H
+    hw_base[0x00D2/2] = 0;
+    dma_regs[3] = hw_base[0x00DE/2];  // DMA3CNT_H
+    hw_base[0x00DE/2] = 0;
+    
+    // 获取保存的大小信息
+    uint32_t save_size_value;
+    GET_REL_VALUE(save_size, save_size_value);
+    
+    // 获取Flash扇区地址
+    uint32_t flash_sector_addr;
+    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
+    
+    // 调用复用的复制函数
+    copy_flash_to_sram(flash_sector_addr, save_size_value);
+    
+    // 恢复DMA状态
+    hw_base[0x00DE/2] = dma_regs[3];
+    hw_base[0x00D2/2] = dma_regs[2];
+    hw_base[0x00C6/2] = dma_regs[1];
+    hw_base[0x00BA/2] = dma_regs[0];
+    
+    // 恢复sound状态
+    hw_base[0x0084/2] = sound_reg2;
+    hw_base[0x0080/2] = sound_reg1;
+}
     
 asm(R"(
 # Flash函数表 - 对应C结构体 flash_fn_table_c[]
