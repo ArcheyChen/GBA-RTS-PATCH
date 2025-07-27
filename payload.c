@@ -43,21 +43,6 @@ __attribute__((target("thumb"))) int identify_flash_4(void);
 __attribute__((target("thumb"))) void erase_flash_4(unsigned sa, unsigned save_size);
 __attribute__((target("thumb"))) void program_flash_4(unsigned sa, unsigned save_size);
 
-// Assembly标签外部声明
-extern char identify_flash_1_end[];
-extern char erase_flash_1_end[];
-extern char program_flash_1_end[];
-extern char identify_flash_2_end[];
-extern char erase_flash_2_end[];
-extern char program_flash_2_end[];
-extern char identify_flash_3_end[];
-extern char erase_flash_3_end[];
-extern char program_flash_3_end[];
-extern char identify_flash_4_end[];
-extern char erase_flash_4_end[];
-extern char program_flash_4_end[];
-
-
 // C语言版本的按键中断处理程序
 __attribute__((target("arm"))) void keypad_irq_handler(void)
 {
