@@ -153,10 +153,8 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
 }
 
 
-  __attribute__((naked, target("arm"))) void flush_sram(void)
+  __attribute__((target("arm"))) void flush_sram(void)
   {
-
-
 asm volatile(R"(
     mov r0, # 0x04000000
     # save sound state then disable it
@@ -178,11 +176,8 @@ asm volatile(R"(
     ldrh r3, [r0, # 0x00de]
     push {r3}
     strh r0, [r0, # 0x00de]
-
-    push {lr}
     
     # Try flushing for various flash chips
-    push {r4, r5, r6, r7}
     adrl r4, flash_save_sector
     sub r4, # 0x08000000
     ldr r5, save_size
@@ -217,9 +212,6 @@ found_flash:
     bl run_from_ram
 
 flush_sram_done:
-    pop {r4, r5, r6, r7}
-
-    pop {lr}
     mov r0, #0x04000000
 
     # restore DMAs state
@@ -237,10 +229,8 @@ flush_sram_done:
     pop {r2, r3}
     strh r3, [r0, # 0x0084]
     strh r2, [r0, # 0x0080]
-
-    bx lr
     
-)");
+)" ::: "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "lr", "memory");
   }
     
 asm(R"(
