@@ -20,7 +20,7 @@ __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint
 // 扇区定义 - 512KB分为8个64KB的扇区
 #define SECTOR_SIZE 0x10000    // 64KB per sector
 #define TOTAL_SECTORS 8        // 8 sectors total (512KB / 64KB)
-#define SRAM_SAVE_SECTOR 0     // 默认使用扇区0保存SRAM
+#define SRAM_SAVE_SECTOR 7     // 默认使用扇区0保存SRAM
 
 // 定义获取相对地址的宏
 #define GET_REL_ADDR(symbol, var) \
@@ -28,6 +28,16 @@ __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint
 
 #define GET_REL_VALUE(symbol, var) \
     asm volatile("ldr %0, " #symbol : "=r"(var))
+
+// Flash函数表结构体
+typedef struct {
+    uint32_t identify_start;
+    uint32_t identify_end;
+    uint32_t erase_start;
+    uint32_t erase_end;
+    uint32_t program_start;
+    uint32_t program_end;
+} flash_functions_t;
 
 // 前向声明  
 void patched_entrypoint(void);
@@ -150,33 +160,29 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     hw_base[0x00DE/2] = 0;
     
     // 用C代码获取地址和值，避免GOT依赖
-    uint32_t flash_sector_addr, save_size_value, flash_fn_table_addr, original_entry_addr;
+    uint32_t flash_sector_addr, save_size_value, original_entry_addr;
     GET_REL_ADDR(flash_save_sector, flash_sector_addr);
     flash_sector_addr -= 0x08000000;  // 转换为flash内偏移
     GET_REL_VALUE(save_size, save_size_value);
-    GET_REL_ADDR(flash_fn_table, flash_fn_table_addr);
     GET_REL_ADDR(original_entrypoint, original_entry_addr);
     
-    // 第一部分：try_flash循环检测（C语言重写）
+    // 第一部分：try_flash循环检测（使用结构体）
     int flash_type_index = -1;
     int identify_result = 0;
     
-    uint32_t *fn_ptr = (uint32_t*)flash_fn_table_addr;
+    flash_functions_t *flash_funcs;
+    GET_REL_ADDR(flash_fn_table, flash_funcs);
     
     for (int i = 0; ; i++) {
-        // 读取identify函数地址
-        uint32_t identify_start = fn_ptr[i * 6];      // identify函数起始地址
-        uint32_t identify_end = fn_ptr[i * 6 + 1];    // identify函数结束地址
-        
         // 检查是否到达表尾
-        if (identify_start == 0) {
+        if (flash_funcs[i].identify_start == 0) {
             identify_result = 0;
             break;
         }
         
         // 调用identify函数
-        identify_start += original_entry_addr;
-        identify_end += original_entry_addr;
+        uint32_t identify_start = flash_funcs[i].identify_start + original_entry_addr;
+        uint32_t identify_end = flash_funcs[i].identify_end + original_entry_addr;
         identify_result = run_thumb_from_ram(0, 0, identify_start, identify_end);
         
         if (identify_result != 0) {
@@ -675,18 +681,18 @@ asm(".align 2\n"
 __attribute__((target("arm"))) void erase_all_sectors(int flash_type_index)
 {
     // 获取必要的地址
-    uint32_t flash_sector_addr, flash_fn_table_addr, original_entry_addr;
+    uint32_t flash_sector_addr, original_entry_addr;
     GET_REL_ADDR(flash_save_sector, flash_sector_addr);
     flash_sector_addr -= 0x08000000;  // 转换为flash内偏移
-    GET_REL_ADDR(flash_fn_table, flash_fn_table_addr);
     GET_REL_ADDR(original_entrypoint, original_entry_addr);
     
-    // 获取函数表
-    uint32_t *fn_ptr = (uint32_t*)flash_fn_table_addr;
+    // 获取函数表（使用结构体）
+    flash_functions_t *flash_funcs;
+    GET_REL_ADDR(flash_fn_table, flash_funcs);
     
     // 获取erase函数地址
-    uint32_t erase_start = fn_ptr[flash_type_index * 6 + 2] + original_entry_addr;
-    uint32_t erase_end = fn_ptr[flash_type_index * 6 + 3] + original_entry_addr;
+    uint32_t erase_start = flash_funcs[flash_type_index].erase_start + original_entry_addr;
+    uint32_t erase_end = flash_funcs[flash_type_index].erase_end + original_entry_addr;
     
     // 擦除512KB
     const uint32_t erase_size = 0x80000; // 512KB
@@ -702,18 +708,18 @@ __attribute__((target("arm"))) void write_sram_to_sector(int sector_num, int fla
     }
     
     // 获取必要的地址
-    uint32_t flash_sector_addr, flash_fn_table_addr, original_entry_addr;
+    uint32_t flash_sector_addr, original_entry_addr;
     GET_REL_ADDR(flash_save_sector, flash_sector_addr);
     uint32_t sector_offset = flash_sector_addr + (sector_num * SECTOR_SIZE) - 0x08000000;
-    GET_REL_ADDR(flash_fn_table, flash_fn_table_addr);
     GET_REL_ADDR(original_entrypoint, original_entry_addr);
     
-    // 获取函数表
-    uint32_t *fn_ptr = (uint32_t*)flash_fn_table_addr;
+    // 获取函数表（使用结构体）
+    flash_functions_t *flash_funcs;
+    GET_REL_ADDR(flash_fn_table, flash_funcs);
     
     // 获取program函数地址
-    uint32_t program_start = fn_ptr[flash_type_index * 6 + 4] + original_entry_addr;
-    uint32_t program_end = fn_ptr[flash_type_index * 6 + 5] + original_entry_addr;
+    uint32_t program_start = flash_funcs[flash_type_index].program_start + original_entry_addr;
+    uint32_t program_end = flash_funcs[flash_type_index].program_end + original_entry_addr;
     
     // 写入64KB数据
     run_thumb_from_ram(sector_offset, SECTOR_SIZE, program_start, program_end);
