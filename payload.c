@@ -29,20 +29,6 @@ void patched_entrypoint(void);
 void flush_sram(void);
 int run_thumb_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
 
-// Flash函数声明 - 显式标记为Thumb模式
-__attribute__((target("thumb"))) int identify_flash_1(void);
-__attribute__((target("thumb"))) void erase_flash_1(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) void program_flash_1(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) int identify_flash_2(void);
-__attribute__((target("thumb"))) void erase_flash_2(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) void program_flash_2(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) int identify_flash_3(void);
-__attribute__((target("thumb"))) void erase_flash_3(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) void program_flash_3(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) int identify_flash_4(void);
-__attribute__((target("thumb"))) void erase_flash_4(unsigned sa, unsigned save_size);
-__attribute__((target("thumb"))) void program_flash_4(unsigned sa, unsigned save_size);
-
 // 前向声明函数
 void load_from_flash(void);
 void copy_flash_to_sram(uint32_t flash_addr, uint32_t size);
@@ -68,16 +54,8 @@ __attribute__((target("arm"))) void keypad_irq_handler(void)
         volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
         *green_swap_reg = 1;
         
-        // 保存当前CPSR并切换到系统模式获取更多栈空间
-        uint32_t old_cpsr;
-        asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
-        asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
-        
         // 调用SRAM刷新函数 (存档)
         flush_sram();
-        
-        // 恢复到IRQ模式
-        asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
         
         // 禁用绿色交换
         *green_swap_reg = 0;
@@ -92,17 +70,9 @@ __attribute__((target("arm"))) void keypad_irq_handler(void)
         // 启用绿色交换 (GREEN_SWAP: 0x04000002)
         volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
         *green_swap_reg = 1;
-        
-        // 保存当前CPSR并切换到系统模式获取更多栈空间
-        uint32_t old_cpsr;
-        asm volatile("mrs %0, cpsr" : "=r"(old_cpsr));
-        asm volatile("msr cpsr, %0" :: "r"(0x9f)); // 系统模式
-        
+
         // 调用读档函数
         load_from_flash();
-        
-        // 恢复到IRQ模式
-        asm volatile("msr cpsr, %0" :: "r"(0x92)); // IRQ模式
         
         // 禁用绿色交换
         *green_swap_reg = 0;
@@ -111,12 +81,6 @@ __attribute__((target("arm"))) void keypad_irq_handler(void)
         while (((*keypad_reg) & lr_select) == 0) {
             // 空循环等待
         }
-    }
-    else {
-        // 如果不是目标按键组合，跳转到原始中断处理程序
-        void (*original_handler)(void) = (void (*)(void))(*original_irq_handler);
-        original_handler();
-        return;
     }
     
     // 跳转到原始中断处理程序
@@ -354,7 +318,12 @@ int run_thumb_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32
     int result;
     
     asm volatile(
-        "push {r4, r5, lr}\n"
+        "mrs r0, CPSR\n"          // 备份当前CPSR
+        "mov r1, #0xDF\n"		//切换到系统模式
+        "msr cpsr_cf, r1\n"
+        "nop\n"                     // 确保CPSR更新完成
+        "push {r0}\n"          // 保存CPSR到栈,注意，此时已经是系统栈
+
         "mov r4, sp\n"                    // 保存当前栈指针
         "bic %[start], %[start], #1\n"    // 清除Thumb位，得到实际函数地址
         
@@ -372,8 +341,10 @@ int run_thumb_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32
         "bx r2\n"                         // 调用Thumb函数
         
         "mov %[result], r0\n"             // 保存返回值
-        "mov sp, r4\n"                    // 恢复栈指针
-        "pop {r4, r5, lr}\n"
+        "mov sp, r4\n"                    // 恢复栈指针(清空拷贝过来的函数代码占的空间)
+
+        "pop {r1}\n"                      // 恢复CPSR
+        "msr cpsr_cf, r1\n"               // 恢复CPSR,即，返回之前的模式（IRQ）
         
         : [result] "=r" (result)
         : [arg0] "r" (arg0), [arg1] "r" (arg1), 
@@ -384,7 +355,7 @@ int run_thumb_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32
     return result;
 }
 
-int identify_flash_1()
+int __attribute__((target("thumb"))) identify_flash_1()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -418,7 +389,7 @@ int identify_flash_1()
 }
 asm("identify_flash_1_end:");
 
-void erase_flash_1(unsigned sa, unsigned )
+void __attribute__((target("thumb"))) erase_flash_1(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xFF);
@@ -436,7 +407,7 @@ void erase_flash_1(unsigned sa, unsigned )
 }
 asm("erase_flash_1_end:");
 
-void program_flash_1(unsigned sa, unsigned _save_size)
+void __attribute__((target("thumb"))) program_flash_1(unsigned sa, unsigned _save_size)
 {    
     // Write data
     SRAM_BANK_SEL = 0;
@@ -456,7 +427,7 @@ void program_flash_1(unsigned sa, unsigned _save_size)
 }
 asm("program_flash_1_end:");
 
-int identify_flash_2()
+int __attribute__((target("thumb"))) identify_flash_2()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -476,7 +447,7 @@ int identify_flash_2()
 }
 asm("identify_flash_2_end:");
 
-void erase_flash_2(unsigned sa, unsigned )
+void __attribute__((target("thumb"))) erase_flash_2(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xF0);
@@ -496,7 +467,7 @@ void erase_flash_2(unsigned sa, unsigned )
 }
 asm("erase_flash_2_end:");
 
-void program_flash_2(unsigned sa, unsigned _save_size)
+void __attribute__((target("thumb"))) program_flash_2(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
@@ -518,7 +489,7 @@ void program_flash_2(unsigned sa, unsigned _save_size)
 }
 asm("program_flash_2_end:");
 
-int identify_flash_3()
+int __attribute__((target("thumb"))) identify_flash_3()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -538,7 +509,7 @@ int identify_flash_3()
 }
 asm("identify_flash_3_end:");
 
-void erase_flash_3(unsigned sa, unsigned )
+void __attribute__((target("thumb"))) erase_flash_3(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xF0);
@@ -558,7 +529,7 @@ void erase_flash_3(unsigned sa, unsigned )
 }
 asm("erase_flash_3_end:");
 
-void program_flash_3(unsigned sa, unsigned _save_size)
+void __attribute__((target("thumb"))) program_flash_3(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
@@ -580,7 +551,7 @@ void program_flash_3(unsigned sa, unsigned _save_size)
 }
 asm("program_flash_3_end:");
 
-int identify_flash_4()
+int __attribute__((target("thumb"))) identify_flash_4()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -611,7 +582,7 @@ int identify_flash_4()
 }
 asm("identify_flash_4_end:");
 
-void erase_flash_4(unsigned sa, unsigned )
+void __attribute__((target("thumb"))) erase_flash_4(unsigned sa, unsigned )
 {
     // Erase flash sector
     _FLASH_WRITE(sa, 0xFF);
@@ -633,7 +604,7 @@ void erase_flash_4(unsigned sa, unsigned )
 }
 asm("erase_flash_4_end:");
 
-void program_flash_4(unsigned sa, unsigned )
+void __attribute__((target("thumb")))  program_flash_4(unsigned sa, unsigned )
 {
     // Write data
     unsigned c = 0;
