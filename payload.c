@@ -183,10 +183,11 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     if (identify_result != 0) {
         uint32_t *erase_prog_ptr = (uint32_t*)fn_table_after_identify;
         
-        // 读取并调用erase函数
+        // 读取并调用erase函数，擦除512KB空间
         uint32_t erase_start = erase_prog_ptr[0] + original_entry_addr;
         uint32_t erase_end = erase_prog_ptr[1] + original_entry_addr;
-        run_thumb_from_ram(flash_sector_addr, save_size_value, erase_start, erase_end);
+        const uint32_t erase_size = 0x80000; // 512KB
+        run_thumb_from_ram(flash_sector_addr, erase_size, erase_start, erase_end);
         
         // 读取并调用program函数
         uint32_t program_start = erase_prog_ptr[2] + original_entry_addr;
@@ -355,7 +356,7 @@ int run_thumb_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32
     return result;
 }
 
-int __attribute__((target("thumb"))) identify_flash_1()
+int __attribute__((target("thumb"), aligned(4))) identify_flash_1()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -387,28 +388,36 @@ int __attribute__((target("thumb"))) identify_flash_1()
 	}
     return 0;
 }
-asm("identify_flash_1_end:");
+asm(".align 2\n"
+    "identify_flash_1_end:");
 
-void __attribute__((target("thumb"))) erase_flash_1(unsigned sa, unsigned )
+void __attribute__((target("thumb"), aligned(4))) erase_flash_1(unsigned sa, unsigned size)
 {
-    // Erase flash sector
-    _FLASH_WRITE(sa, 0xFF);
-    _FLASH_WRITE(sa, 0x60);
-    _FLASH_WRITE(sa, 0xD0);
-    _FLASH_WRITE(sa, 0x20);
-    _FLASH_WRITE(sa, 0xD0);
-    while (1) {
-        __asm("nop");
-        if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0x80) {
-            break;
+    // Erase flash sectors based on size
+    // Flash type 1 typically has 64KB sectors
+    unsigned sector_size = 0x10000; // 64KB
+    unsigned end_addr = sa + size;
+    
+    for (; sa < end_addr; sa += sector_size) {
+        _FLASH_WRITE(sa, 0xFF);
+        _FLASH_WRITE(sa, 0x60);
+        _FLASH_WRITE(sa, 0xD0);
+        _FLASH_WRITE(sa, 0x20);
+        _FLASH_WRITE(sa, 0xD0);
+        while (1) {
+            __asm("nop");
+            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0x80) {
+                break;
+            }
         }
+        _FLASH_WRITE(sa, 0xFF);
     }
-    _FLASH_WRITE(sa, 0xFF);
 }
-asm("erase_flash_1_end:");
+asm(".align 2\n"
+    "erase_flash_1_end:");
 
-void __attribute__((target("thumb"))) program_flash_1(unsigned sa, unsigned _save_size)
-{    
+void __attribute__((target("thumb"), aligned(4))) program_flash_1(unsigned sa, unsigned _save_size)
+{
     // Write data
     SRAM_BANK_SEL = 0;
     for (unsigned i=0; i<_save_size; i+=2) {
@@ -425,9 +434,11 @@ void __attribute__((target("thumb"))) program_flash_1(unsigned sa, unsigned _sav
     }
     _FLASH_WRITE(sa, 0xFF);
 }
-asm("program_flash_1_end:");
 
-int __attribute__((target("thumb"))) identify_flash_2()
+asm(".align 2\n"
+    "program_flash_1_end:");
+
+int __attribute__((target("thumb"), aligned(4))) identify_flash_2()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -445,29 +456,37 @@ int __attribute__((target("thumb"))) identify_flash_2()
 	}
     return 0;
 }
-asm("identify_flash_2_end:");
+asm(".align 2\n"
+    "identify_flash_2_end:");
 
-void __attribute__((target("thumb"))) erase_flash_2(unsigned sa, unsigned )
+void __attribute__((target("thumb"), aligned(4))) erase_flash_2(unsigned sa, unsigned size)
 {
-    // Erase flash sector
-    _FLASH_WRITE(sa, 0xF0);
-    _FLASH_WRITE(0xAAA, 0xA9);
-    _FLASH_WRITE(0x555, 0x56);
-    _FLASH_WRITE(0xAAA, 0x80);
-    _FLASH_WRITE(0xAAA, 0xA9);
-    _FLASH_WRITE(0x555, 0x56);
-    _FLASH_WRITE(sa, 0x30);
-    while (1) {
-        __asm("nop");
-        if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
-            break;
+    // Erase flash sectors based on size
+    // Flash type 2 typically has 64KB sectors
+    unsigned sector_size = 0x10000; // 64KB
+    unsigned end_addr = sa + size;
+    
+    for (; sa < end_addr; sa += sector_size) {
+        _FLASH_WRITE(sa, 0xF0);
+        _FLASH_WRITE(0xAAA, 0xA9);
+        _FLASH_WRITE(0x555, 0x56);
+        _FLASH_WRITE(0xAAA, 0x80);
+        _FLASH_WRITE(0xAAA, 0xA9);
+        _FLASH_WRITE(0x555, 0x56);
+        _FLASH_WRITE(sa, 0x30);
+        while (1) {
+            __asm("nop");
+            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
+                break;
+            }
         }
+        _FLASH_WRITE(sa, 0xF0);
     }
-    _FLASH_WRITE(sa, 0xF0);
 }
-asm("erase_flash_2_end:");
+asm(".align 2\n"
+    "erase_flash_2_end:");
 
-void __attribute__((target("thumb"))) program_flash_2(unsigned sa, unsigned _save_size)
+void __attribute__((target("thumb"), aligned(4))) program_flash_2(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
@@ -487,9 +506,10 @@ void __attribute__((target("thumb"))) program_flash_2(unsigned sa, unsigned _sav
     }
     _FLASH_WRITE(sa, 0xF0);
 }
-asm("program_flash_2_end:");
+asm(".align 2\n"
+    "program_flash_2_end:");
 
-int __attribute__((target("thumb"))) identify_flash_3()
+int __attribute__((target("thumb"), aligned(4))) identify_flash_3()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -507,29 +527,37 @@ int __attribute__((target("thumb"))) identify_flash_3()
 	}
     return 0;
 }
-asm("identify_flash_3_end:");
+asm(".align 2\n"
+    "identify_flash_3_end:");
 
-void __attribute__((target("thumb"))) erase_flash_3(unsigned sa, unsigned )
+void __attribute__((target("thumb"), aligned(4))) erase_flash_3(unsigned sa, unsigned size)
 {
-    // Erase flash sector
-    _FLASH_WRITE(sa, 0xF0);
-    _FLASH_WRITE(0xAAA, 0xAA);
-    _FLASH_WRITE(0x555, 0x55);
-    _FLASH_WRITE(0xAAA, 0x80);
-    _FLASH_WRITE(0xAAA, 0xAA);
-    _FLASH_WRITE(0x555, 0x55);
-    _FLASH_WRITE(sa, 0x30);
-    while (1) {
-        __asm("nop");
-        if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
-            break;
+    // Erase flash sectors based on size
+    // Flash type 3 typically has 64KB sectors
+    unsigned sector_size = 0x10000; // 64KB
+    unsigned end_addr = sa + size;
+    
+    for (; sa < end_addr; sa += sector_size) {
+        _FLASH_WRITE(sa, 0xF0);
+        _FLASH_WRITE(0xAAA, 0xAA);
+        _FLASH_WRITE(0x555, 0x55);
+        _FLASH_WRITE(0xAAA, 0x80);
+        _FLASH_WRITE(0xAAA, 0xAA);
+        _FLASH_WRITE(0x555, 0x55);
+        _FLASH_WRITE(sa, 0x30);
+        while (1) {
+            __asm("nop");
+            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
+                break;
+            }
         }
+        _FLASH_WRITE(sa, 0xF0);
     }
-    _FLASH_WRITE(sa, 0xF0);
 }
-asm("erase_flash_3_end:");
+asm(".align 2\n"
+    "erase_flash_3_end:");
 
-void __attribute__((target("thumb"))) program_flash_3(unsigned sa, unsigned _save_size)
+void __attribute__((target("thumb"), aligned(4))) program_flash_3(unsigned sa, unsigned _save_size)
 {
     // Write data
     SRAM_BANK_SEL = 0;
@@ -549,9 +577,10 @@ void __attribute__((target("thumb"))) program_flash_3(unsigned sa, unsigned _sav
     }
     _FLASH_WRITE(sa, 0xF0);   
 }
-asm("program_flash_3_end:");
+asm(".align 2\n"
+    "program_flash_3_end:");
 
-int __attribute__((target("thumb"))) identify_flash_4()
+int __attribute__((target("thumb"), aligned(4))) identify_flash_4()
 {
     unsigned rom_data, data;
 	//stop_dma_interrupts();
@@ -580,31 +609,38 @@ int __attribute__((target("thumb"))) identify_flash_4()
 	}
     return 0;
 }
-asm("identify_flash_4_end:");
+asm(".align 2\n"
+    "identify_flash_4_end:");
 
-void __attribute__((target("thumb"))) erase_flash_4(unsigned sa, unsigned )
+void __attribute__((target("thumb"), aligned(4))) erase_flash_4(unsigned sa, unsigned size)
 {
-    // Erase flash sector
-    _FLASH_WRITE(sa, 0xFF);
-    _FLASH_WRITE(sa, 0x60);
-    _FLASH_WRITE(sa, 0xD0);
-    _FLASH_WRITE(sa, 0x20);
-    _FLASH_WRITE(sa, 0xD0);
-    while (1) {
-        __asm("nop");
-        if ((*(((unsigned short *)AGB_ROM)+(sa/2)) & 0x80) == 0x80) {
-            break;
-        }
-    }
-    _FLASH_WRITE(sa, 0xFF);
+    // Erase flash sectors based on size
+    // Flash type 4 typically has 64KB sectors
+    unsigned sector_size = 0x10000; // 64KB
+    unsigned end_addr = sa + size;
     
-    	
-    for (volatile int i = 0; i < 1024; ++i)
-        __asm("nop");
+    for (; sa < end_addr; sa += sector_size) {
+        _FLASH_WRITE(sa, 0xFF);
+        _FLASH_WRITE(sa, 0x60);
+        _FLASH_WRITE(sa, 0xD0);
+        _FLASH_WRITE(sa, 0x20);
+        _FLASH_WRITE(sa, 0xD0);
+        while (1) {
+            __asm("nop");
+            if ((*(((unsigned short *)AGB_ROM)+(sa/2)) & 0x80) == 0x80) {
+                break;
+            }
+        }
+        _FLASH_WRITE(sa, 0xFF);
+        
+        for (volatile int i = 0; i < 1024; ++i)
+            __asm("nop");
+    }
 }
-asm("erase_flash_4_end:");
+asm(".align 2\n"
+    "erase_flash_4_end:");
 
-void __attribute__((target("thumb")))  program_flash_4(unsigned sa, unsigned )
+void __attribute__((target("thumb"), aligned(4)))  program_flash_4(unsigned sa, unsigned )
 {
     // Write data
     unsigned c = 0;
@@ -638,7 +674,8 @@ void __attribute__((target("thumb")))  program_flash_4(unsigned sa, unsigned )
     for (volatile int i = 0; i < 1024; ++i)
         __asm("nop");
 }
-asm("program_flash_4_end:");
+asm(".align 2\n"
+    "program_flash_4_end:");
 
 
 asm(R"(
