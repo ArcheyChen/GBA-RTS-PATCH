@@ -1,5 +1,6 @@
 // Payload头部必须在文件开头，patcher需要
 #include <stdint.h>
+#include <stdbool.h>
 
 // 前向声明
 void patched_entrypoint(void);
@@ -15,6 +16,7 @@ __attribute__((section(".text"))) const char rts_flag_string[] = "EZ-OmegaRTCFIL
 //默认临时存储地址 (EWRAM区域)
 //0203FFFF - 0203FE00 = 0x1FF, 512字节的空闲区域，这是认为，至少，EWRAM会有这么多的可用空间
 #define SPEND_0x80_ADDR 0x0203FE00
+//注：C语言必须用define的方式获取，不能用下面定义的，不然会炸，不知道为什么
 asm("spend_0x80:\n"
     ".text\n"
 	".word 0x0203FE00");
@@ -69,7 +71,7 @@ void save_ewram_to_flash(int flash_type_index);
 void save_iwram_palette_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
 void save_vram_back_misc_to_flash(int flash_type_index);
-int check_rts_save_flag(void);
+bool check_rts_save_flag(void);
 
 // 汇编入口函数 - 保存寄存器并调用keypad_process
 asm(
@@ -308,6 +310,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 先检查RTS存档标志
     if (!check_rts_save_flag()) {
         // 标志检查失败，直接返回，不启用绿色交换
+        while(1);
         return;
     }
     
@@ -821,12 +824,10 @@ __attribute__((target("arm"))) void restore_sram_from_sector(int sector_num)
 }
 
 // 检查RTS存档标志是否有效
-__attribute__((target("arm"))) int check_rts_save_flag(void)
+__attribute__((target("arm"))) bool check_rts_save_flag(void)
 {
     // 获取spend_0x80地址
-    uint32_t spend_addr;
-    GET_REL_ADDR(spend_0x80, spend_addr);
-    volatile uint8_t *spend = (volatile uint8_t*)spend_addr;
+    volatile uint8_t *spend = (volatile uint8_t*)SPEND_0x80_ADDR;
     
     // 计算扇区6的flash地址 + 0xFFF0偏移
     uint32_t flash_sector_addr;
@@ -847,11 +848,11 @@ __attribute__((target("arm"))) int check_rts_save_flag(void)
     // 检查标志是否匹配
     for (uint32_t i = 0; i < 16; i++) {
         if (spend[i] != expected_flag[i]) {
-            return 0;
+            return false;
         }
     }
-
-    return 1;
+    
+    return true;
 }
 
 // 保存EWRAM到Flash扇区0-3
