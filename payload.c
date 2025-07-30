@@ -31,6 +31,7 @@ asm("spend_0x80:\n"
 #define EWRAM_START_SECTOR 0   // EWRAM从扇区0开始，占用0-3
 #define IWRAM_PALETTE_SECTOR 4 // IWRAM和调色板保存在扇区4
 #define VRAM_FRONT_SECTOR 5    // VRAM前64KB保存在扇区5
+#define VRAM_BACK_MISC_SECTOR 6 // VRAM后32KB、OAM、IO寄存器等保存在扇区6
 
 // 定义获取相对地址的宏
 #define GET_REL_ADDR(symbol, var) \
@@ -64,6 +65,7 @@ void write_sram_to_sector(int sector_num, int flash_type_index);
 void save_ewram_to_flash(int flash_type_index);
 void save_iwram_palette_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
+void save_vram_back_misc_to_flash(int flash_type_index);
 
 // 汇编入口函数 - 保存寄存器并调用keypad_process
 asm(
@@ -243,7 +245,8 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
         // 保存VRAM前64KB到扇区5
         save_vram_front_to_flash(flash_type_index);
         
-        // TODO: 保存VRAM后半部分和其他内存区域
+        // 保存VRAM后半部分、OAM、IO寄存器等到扇区6
+        save_vram_back_misc_to_flash(flash_type_index);
         
         // 恢复SRAM为原状
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
@@ -865,6 +868,80 @@ __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_inde
     
     // 写入到扇区5
     write_sram_to_sector(VRAM_FRONT_SECTOR, flash_type_index);
+}
+
+// 保存VRAM后半部分、OAM、IO寄存器等到Flash扇区6
+__attribute__((target("arm"))) void save_vram_back_misc_to_flash(int flash_type_index)
+{
+    volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+    
+    // 先清空SRAM
+    for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
+        sram[i] = 0;
+    }
+    
+    // 1. 复制VRAM后32KB (0x06010000) 到SRAM的0x0000偏移
+    volatile uint8_t *vram_back = (volatile uint8_t*)0x06010000;
+    for (uint32_t i = 0; i < 0x8000; i++) {
+        sram[i] = vram_back[i];
+    }
+    
+    // 2. 复制OAM (1KB) 到SRAM的0x8000偏移
+    volatile uint8_t *oam = (volatile uint8_t*)0x07000000;
+    volatile uint8_t *sram_oam = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x400; i++) {
+        sram_oam[i] = oam[i];
+    }
+    
+    // 3. 保存系统模式的SP和LR到spend_0x80+0x30
+    // 必须在一个asm块中完成整个操作
+    asm volatile(
+        "mrs r0, CPSR\n"            // 备份当前CPSR
+        "adrl r7, spend_0x80\n"     
+        "ldr r7,[r7]\n"         // 获取spend_0x80的地址
+        "add r7,#0x30\n"         // 指向spend_0x80+0x30
+        "mov r1, #0xDF\n"           // 系统模式
+        "msr cpsr_cf, r1\n"
+        "nop\n"
+        "mov r6, sp\n"              // 获取系统模式SP
+        "stmia r7!, {r6, lr}\n"     // 保存SP和LR到spend_0x80+0x30
+        "msr cpsr_cf, r0\n"         // 恢复IRQ模式
+        "nop\n"
+        : : : "r0", "r1", "r6", "r7", "memory"
+    );
+    
+    // 4. 复制spend_0x80的内容(128字节)到SRAM的0x8400偏移
+    volatile uint8_t *spend_src = (volatile uint8_t*)SPEND_0x80_ADDR;
+    volatile uint8_t *sram_spend = sram + 0x8400;
+    for (uint32_t i = 0; i < 0x80; i++) {
+        sram_spend[i] = spend_src[i];
+    }
+    
+    // 5. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
+    volatile uint8_t *io_base = (volatile uint8_t*)0x04000000;
+    volatile uint8_t *sram_io1 = sram + 0x9000;
+    for (uint32_t i = 0; i < 0x60; i++) {
+        sram_io1[i] = io_base[i];
+    }
+    
+    // 6. 复制spend_0x80+0x40的内容(0x30字节)到SRAM的0x9060偏移
+    volatile uint8_t *spend_audio = (volatile uint8_t*)(SPEND_0x80_ADDR + 0x40);
+    volatile uint8_t *sram_audio = sram + 0x9060;
+    for (uint32_t i = 0; i < 0x30; i++) {
+        sram_audio[i] = spend_audio[i];
+    }
+    
+    // 7. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
+    volatile uint8_t *io_base2 = (volatile uint8_t*)0x04000090;
+    volatile uint8_t *sram_io2 = sram + 0x9090;
+    for (uint32_t i = 0; i < 0x370; i++) {
+        sram_io2[i] = io_base2[i];
+    }
+    
+    // 8. 暂时跳过RTS标志字符串（后续再加）
+    
+    // 写入到扇区6
+    write_sram_to_sector(VRAM_BACK_MISC_SECTOR, flash_type_index);
 }
 
 asm(R"(
