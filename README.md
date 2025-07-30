@@ -2,6 +2,8 @@
 
 This project provides automatic Real-Time Save (RTS) functionality for GBA games running on batteryless flash carts. It allows players to save and restore game state at any time using button combinations.
 
+**not working right now**
+
 ## Features
 
 - **Real-Time Save**: Press L+R+START to save current game state
@@ -65,8 +67,11 @@ This project is actively seeking help with:
 Please see [CURRENT_ISSUES.md](CURRENT_ISSUES.md) for specific technical challenges that need solving.
 
 ## Credits
-Written by [metroid-maniac](https://github.com/metroid-maniac/)
+RTS & C language Porting: [Ausar](https://github.com/ArcheyChen)
 
+Base on project: [gba auto batteryless patcher](https://github.com/metroid-maniac/gba-auto-batteryless-patcher) written by [metroid-maniac](https://github.com/metroid-maniac/)
+
+RTS algorithm: [EzFlash's EZODE](https://github.com/ez-flash/omega-de-kernel/blob/main/source/gba_rts_patch.s)
 Thanks to
 - [ez-flash](https://github.com/ez-flash) for [EZ Flash Omega kernel](https://github.com/ez-flash/omega-kernel) containing examples for hooking the IRQ handler
 - [Fexean](https://gitlab.com/Fexean) for [GBABF](https://gitlab.com/Fexean/gbabf)
