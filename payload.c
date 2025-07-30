@@ -50,6 +50,7 @@ typedef struct {
 void patched_entrypoint(void);
 void rts_save(void);
 int run_thumb_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
+void keypad_process(void);
 
 // 前向声明函数
 void load_from_flash(void);
@@ -58,8 +59,24 @@ void restore_sram_from_sector(int sector_num);
 void erase_all_sectors(int flash_type_index);
 void write_sram_to_sector(int sector_num, int flash_type_index);
 
+// 汇编入口函数 - 保存寄存器并调用keypad_process
+asm(
+"    .arm\n"
+"    .align\n"
+"keypad_irq_handler:\n"
+"    ldr r12, spend_0x80\n"
+"    ldr r12, [r12]\n"
+"    stmia r12!, {r4-r11,sp,lr}\n"
+"    mrs r2, SPSR\n"
+"    stmia r12!, {r2}\n"
+"    \n"
+"    push {lr}\n"
+"    bl keypad_process\n"
+"    pop {pc}\n"
+);
+
 // C语言版本的按键中断处理程序  
-__attribute__((target("arm"))) void keypad_irq_handler(void)
+__attribute__((target("arm"))) void keypad_process(void)
 {
     // 修正：原始IRQ处理程序地址应该是0x03FFFFF4 (0x04000000-12)
     volatile uint32_t *original_irq_handler = (volatile uint32_t*)0x03FFFFF4;
@@ -359,6 +376,7 @@ int run_thumb_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32
     
     return result;
 }
+
 
 int __attribute__((target("thumb"), aligned(4))) identify_flash_1()
 {
