@@ -13,6 +13,20 @@ __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint
 // RTS存档标志字符串 - 必须放在.text段
 __attribute__((section(".text"))) const char rts_flag_string[] = "EZ-OmegaRTCFILE.";
 
+// IO寄存器恢复列表 - 必须放在.text段（与EZODE一致）
+__attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] = {
+    0x0000, 0x0002, 0x0004, 0x0008, 0x000A, 0x000C, 0x000E, 0x0048,
+    0x004A, 0x0050, 0x0052,
+    0x0084,
+    0x0060, 0x0062, 0x0068, 0x0070, 0x0072, 0x0078,
+    0x0080, 0x0082, 0x0088,                         // 0x008C, 0x008E,
+    0x0090, 0x0092, 0x0094, 0x0096, 0x0098, 0x009A, 0x009C, 0x009E,
+    0x00B8, 0x00C4, 0x00D0, 0x00DC,  // DMA
+    0x0120, 0x0122, 0x0124, 0x0126, 0x0128, 0x012A, 0x012C, 0x0132, 0x0134,
+    0x0140, 0x0150, 0x0154, 0x0200, 0x0204, 0x0208,
+    0xFF00  // 结束标记
+};
+
 //默认临时存储地址 (EWRAM区域)
 //0203FFFF - 0203FE00 = 0x1FF, 512字节的空闲区域，这是认为，至少，EWRAM会有这么多的可用空间
 #define SPEND_0x80_ADDR 0x0203FE00
@@ -109,22 +123,58 @@ __attribute__((target("arm"))) void keypad_process(void)
     uint16_t lr_select = 0x304;  // L+R+SELECT (读档)
     
     // 检查是否按下L+R+START (存档)
-    if ((keypad_value & lr_start) == 0) {
-        // 调用SRAM刷新函数 (存档)
-        rts_save();
-        // 等待按键组合松开
-        while (((*keypad_reg) & lr_start) == 0) {
-            // 空循环等待
+    bool need_save = (keypad_value & lr_start) == 0;
+    bool need_load = (keypad_value & lr_select) == 0;
+    if (need_save || need_load) {
+        // 硬件寄存器基地址
+        volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
+        
+        // 获取spend_0x80地址并设置当前位置
+        volatile uint16_t *spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x40);
+        
+        // 保存音频寄存器 (0x4000060-0x4000090) 到 spend_0x80+0x40
+        volatile uint16_t *audio_reg = &hw_base[0x0060/2];
+        for (int i = 0; i < 24; i++) {  // 48字节 = 24个16位寄存器
+            *spend_addr++ = *audio_reg++;
         }
-    }
-    // 检查是否按下L+R+SELECT (读档)
-    else if ((keypad_value & lr_select) == 0) {
-
-        // 调用读档函数
-        load_from_flash();
+        
+        // 保存DMA控制寄存器到spend_0x80+0x72开始
+        *spend_addr++ = hw_base[0x00BA/2];  // DMA0CNT_H
+        *spend_addr++ = hw_base[0x00C6/2];  // DMA1CNT_H
+        *spend_addr++ = hw_base[0x00D2/2];  // DMA2CNT_H
+        *spend_addr++ = hw_base[0x00DE/2];  // DMA3CNT_H
+        
+        // 保存SOUNDCNT_L和SOUNDCNT_X到栈（与EZODE一致）
+        uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
+        uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_X
+        
+        // 禁用音频和DMA
+        hw_base[0x0084/2] = 0;  // 禁用sound
+        hw_base[0x00BA/2] = 0;  // 禁用DMA0
+        hw_base[0x00C6/2] = 0;  // 禁用DMA1
+        hw_base[0x00D2/2] = 0;  // 禁用DMA2
+        hw_base[0x00DE/2] = 0;  // 禁用DMA3
+        
+        // 调用存档或读档函数
+        if(need_save)
+            rts_save();
+        else
+            load_from_flash();
+            
+        // 恢复DMA状态（从spend_0x80+0x72读取）
+        spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x72);
+        hw_base[0x00BA/2] = *spend_addr++;  // DMA0CNT_H
+        hw_base[0x00C6/2] = *spend_addr++;  // DMA1CNT_H
+        hw_base[0x00D2/2] = *spend_addr++;  // DMA2CNT_H
+        hw_base[0x00DE/2] = *spend_addr++;  // DMA3CNT_H
+        
+        // 恢复sound状态
+        hw_base[0x0084/2] = sound_reg2;
+        hw_base[0x0080/2] = sound_reg1;
         
         // 等待按键组合松开
-        while (((*keypad_reg) & lr_select) == 0) {
+        uint16_t wait_keys = need_save ? lr_start : lr_select;
+        while (((*keypad_reg) & wait_keys) == 0) {
             // 空循环等待
         }
     }
@@ -170,35 +220,6 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
   {
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
-
-    // 硬件寄存器基地址
-    volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
-    
-    // 获取spend_0x80地址并设置当前位置
-    volatile uint16_t *spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x40);
-    
-    // 保存音频寄存器 (0x4000060-0x4000090) 到 spend_0x80+0x40
-    volatile uint16_t *audio_reg = &hw_base[0x0060/2];
-    for (int i = 0; i < 24; i++) {  // 48字节 = 24个16位寄存器
-        *spend_addr++ = *audio_reg++;
-    }
-    
-    // 保存DMA控制寄存器到spend_0x80+0x72开始
-    *spend_addr++ = hw_base[0x00BA/2];  // DMA0CNT_H
-    *spend_addr++ = hw_base[0x00C6/2];  // DMA1CNT_H
-    *spend_addr++ = hw_base[0x00D2/2];  // DMA2CNT_H
-    *spend_addr++ = hw_base[0x00DE/2];  // DMA3CNT_H
-    
-    // 保存SOUNDCNT_L和SOUNDCNT_X到栈（与EZODE一致）
-    uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
-    uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_X
-    
-    // 禁用音频和DMA
-    hw_base[0x0084/2] = 0;  // 禁用sound
-    hw_base[0x00BA/2] = 0;  // 禁用DMA0
-    hw_base[0x00C6/2] = 0;  // 禁用DMA1
-    hw_base[0x00D2/2] = 0;  // 禁用DMA2
-    hw_base[0x00DE/2] = 0;  // 禁用DMA3
     
     // 用C代码获取地址和值，避免GOT依赖
     uint32_t flash_sector_addr, save_size_value, original_entry_addr;
@@ -258,23 +279,7 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
     }
     
-    // 恢复sound状态（从EZODE看，先恢复主控制寄存器）
-    hw_base[0x0084/2] = sound_reg2;  // SOUNDCNT_X
-    hw_base[0x0080/2] = sound_reg1;  // SOUNDCNT_L
-    
-    // 从 spend_0x80 恢复音频寄存器
-    spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x40);
-    audio_reg = &hw_base[0x0060/2];
-    for (int i = 0; i < 24; i++) {
-        *audio_reg++ = *spend_addr++;
-    }
-    
-    // 从 spend_0x80+0x72 恢复DMA控制寄存器
-    hw_base[0x00BA/2] = *spend_addr++;  // DMA0CNT_H
-    hw_base[0x00C6/2] = *spend_addr++;  // DMA1CNT_H
-    hw_base[0x00D2/2] = *spend_addr++;  // DMA2CNT_H
-    hw_base[0x00DE/2] = *spend_addr++;  // DMA3CNT_H
-    
+    // 禁用绿色交换
     *green_swap_reg = 0;
   }
 
@@ -310,48 +315,153 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 先检查RTS存档标志
     if (!check_rts_save_flag()) {
         // 标志检查失败，直接返回，不启用绿色交换
-        while(1);
         return;
     }
     
     // 启用绿色交换 (GREEN_SWAP: 0x04000002)
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
+    
+    
+    // 2. 大块内存恢复
+    // 恢复EWRAM (256KB) - 从扇区0-3
+    volatile uint8_t *ewram = (volatile uint8_t*)0x02000000;
+    for (int sector = 0; sector < 4; sector++) {
+        // 从扇区恢复到SRAM
+        restore_sram_from_sector(EWRAM_START_SECTOR + sector);
+        // 从SRAM复制到EWRAM
+        volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+        int sector_start = sector * SECTOR_SIZE;
+        for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
+            ewram[sector_start + i] = sram[i];
+        }
+    }
+    
+    // 恢复IWRAM和调色板 - 从扇区4
+    restore_sram_from_sector(IWRAM_PALETTE_SECTOR);
+    volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+    
+    // 恢复IWRAM (32KB)
+    volatile uint8_t *iwram = (volatile uint8_t*)0x03000000;
+    for (uint32_t i = 0; i < 0x8000; i++) {
+        iwram[i] = sram[i];
+    }
+    
+    // 恢复调色板 (1KB)
+    volatile uint8_t *palette = (volatile uint8_t*)0x05000000;
+    volatile uint8_t *sram_palette = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x400; i++) {
+        palette[i] = sram_palette[i];
+    }
+    
+    // 3. VRAM恢复
+    // 恢复VRAM前64KB - 从扇区5
+    restore_sram_from_sector(VRAM_FRONT_SECTOR);
+    volatile uint8_t *vram = (volatile uint8_t*)0x06000000;
+    for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
+        vram[i] = sram[i];
+    }
+    
+    // 恢复VRAM后32KB和OAM - 从扇区6
+    restore_sram_from_sector(VRAM_BACK_MISC_SECTOR);
+    volatile uint8_t *vram_back = (volatile uint8_t*)0x06010000;
+    for (uint32_t i = 0; i < 0x8000; i++) {
+        vram_back[i] = sram[i];
+    }
+    
+    // 恢复OAM (1KB)
+    volatile uint8_t *oam = (volatile uint8_t*)0x07000000;
+    volatile uint8_t *sram_oam = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x400; i++) {
+        oam[i] = sram_oam[i];
+    }
+    
+    ////////////////////////////////////////////////////////////////////////////////////////
+    // 4. 零散数据恢复 - 从扇区6恢复系统模式SP/LR、IO寄存器、spend_0x80等
+    ////////////////////////////////////////////////////////////////////////////////////////
+    
+    // 有选择地恢复IO寄存器 - 使用寄存器列表（与EZODE一致）
+    volatile uint16_t *io_base = (volatile uint16_t*)0x04000000;
+    volatile uint8_t *sram_io = sram + 0x9000;
+    
+    // 获取寄存器列表地址
+    uint32_t reg_list_addr;
+    GET_REL_ADDR(io_register_list, reg_list_addr);
+    const uint16_t *reg_list = (const uint16_t*)reg_list_addr;
+    
+    // 遍历寄存器列表，恢复指定的寄存器
+    for (int i = 0; reg_list[i] != 0xFF00; i++) {
+        uint16_t offset = reg_list[i];
+        // 从SRAM读取2字节（与EZODE的restore2_IO函数一致）
+        uint16_t value = sram_io[offset] | (sram_io[offset + 1] << 8);
+        // 写入到IO寄存器
+        io_base[offset / 2] = value;
+    }
+    
+    // 额外恢复DMA1控制寄存器 - 从扇区6的0x8500+0x34偏移
+    volatile uint8_t *sram_dma = sram + 0x8500;
+    uint16_t dma1_value = sram_dma[0x34] | (sram_dma[0x35] << 8);
+    io_base[0x00C6 / 2] = dma1_value;  // DMA1CNT_H
+    
+    // 清零中断标志寄存器 IF (Interrupt Request Flags / IRQ Acknowledge)
+    io_base[0x0202 / 2] = 0;
+    
+    // 恢复spend_0x80区域（0x80字节）- 从扇区6的0x8400偏移
+    volatile uint8_t *spend = (volatile uint8_t*)SPEND_0x80_ADDR;
+    volatile uint8_t *sram_spend = sram + 0x8400;
+    for (uint32_t i = 0; i < 0x80; i++) {
+        spend[i] = sram_spend[i];
+    }
+    
+    // 恢复系统模式SP和LR寄存器
+    // 这需要切换到系统模式，恢复寄存器，然后切换回来
+    asm volatile(
+        "mrs r0, cpsr\n"                // 保存当前CPSR
+        "adrl r7, spend_0x80\n"         // 
+        "ldr r7, [r7]\n"               // 读取spend_0x80地址
+        "add r7, #0x28\n"          // 偏移到保存SPSR的地址
 
-    // 硬件寄存器基地址
-    volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
+        "ldmia r7!,{r2}\n"      //现在r7 = 0x28+4 = 0x2C
+        "msr spsr_cxsf, r2\n"          // 恢复SPSR irq状态
+
+        "mov r1,#0xDF\n"          // 切换到系统模式
+        "msr cpsr_cf, r1\n"
+        "nop\n"
+        
+        "add r7,#0x4\n"          // 现在r7 = 0x2C+4 = 0x30
+        "ldmia r7!,{r13-r14}\n" // 恢复r13-r14,即SP和LR寄存器
+        
+        "msr cpsr_cf, r0\n"          // 恢复CPSR,即，切换回到IRQ模式
+        "nop\n"
+
+        :
+        : 
+        : "r0", "r1", "r2", "r7", "memory"
+    );
     
-    // 保存sound状态并禁用
-    uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
-    uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_H
-    hw_base[0x0084/2] = 0;  // 禁用sound
-    
-    // 保存DMA状态并禁用
-    uint16_t dma_regs[4];
-    dma_regs[0] = hw_base[0x00BA/2];  // DMA0CNT_H
-    hw_base[0x00BA/2] = 0;
-    dma_regs[1] = hw_base[0x00C6/2];  // DMA1CNT_H
-    hw_base[0x00C6/2] = 0;
-    dma_regs[2] = hw_base[0x00D2/2];  // DMA2CNT_H
-    hw_base[0x00D2/2] = 0;
-    dma_regs[3] = hw_base[0x00DE/2];  // DMA3CNT_H
-    hw_base[0x00DE/2] = 0;
+    ////////////////////////////////////////////////////////////////////////////////////////
+    // 恢复结束
+    ////////////////////////////////////////////////////////////////////////////////////////
     
     // 从默认扇区恢复SRAM
     restore_sram_from_sector(SRAM_SAVE_SECTOR);
     
-    // 恢复DMA状态
-    hw_base[0x00DE/2] = dma_regs[3];
-    hw_base[0x00D2/2] = dma_regs[2];
-    hw_base[0x00C6/2] = dma_regs[1];
-    hw_base[0x00BA/2] = dma_regs[0];
-    
-    // 恢复sound状态
-    hw_base[0x0084/2] = sound_reg2;
-    hw_base[0x0080/2] = sound_reg1;
-    
     // 禁用绿色交换
     *green_swap_reg = 0;
+    
+    // 恢复IRQ模式的寄存器并跳转到原始中断处理程序
+    // 与EZODE实现一致
+    asm volatile(
+        "adrl r12, spend_0x80\n"
+        "ldr r12, [r12]\n"
+        "ldmia r12!, {r4-r11,sp,lr}\n"
+        "\n"
+        "mov r0, #0x04000000\n"
+        "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
+        :
+        :
+        : "r0", "r12", "memory"
+    );
 }
     
 asm(R"(
