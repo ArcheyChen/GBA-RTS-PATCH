@@ -29,6 +29,8 @@ asm("spend_0x80:\n"
 #define TOTAL_SECTORS 8        // 8 sectors total (512KB / 64KB)
 #define SRAM_SAVE_SECTOR 7     // 默认使用扇区7保存SRAM
 #define EWRAM_START_SECTOR 0   // EWRAM从扇区0开始，占用0-3
+#define IWRAM_PALETTE_SECTOR 4 // IWRAM和调色板保存在扇区4
+#define VRAM_FRONT_SECTOR 5    // VRAM前64KB保存在扇区5
 
 // 定义获取相对地址的宏
 #define GET_REL_ADDR(symbol, var) \
@@ -60,6 +62,8 @@ void restore_sram_from_sector(int sector_num);
 void erase_all_sectors(int flash_type_index);
 void write_sram_to_sector(int sector_num, int flash_type_index);
 void save_ewram_to_flash(int flash_type_index);
+void save_iwram_palette_to_flash(int flash_type_index);
+void save_vram_front_to_flash(int flash_type_index);
 
 // 汇编入口函数 - 保存寄存器并调用keypad_process
 asm(
@@ -233,7 +237,13 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
         // 保存EWRAM到扇区0-3
         save_ewram_to_flash(flash_type_index);
         
-        // TODO: 保存其他内存区域
+        // 保存IWRAM和调色板到扇区4
+        save_iwram_palette_to_flash(flash_type_index);
+        
+        // 保存VRAM前64KB到扇区5
+        save_vram_front_to_flash(flash_type_index);
+        
+        // TODO: 保存VRAM后半部分和其他内存区域
         
         // 恢复SRAM为原状
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
@@ -813,6 +823,48 @@ __attribute__((target("arm"))) void save_ewram_to_flash(int flash_type_index)
         // 写入到对应扇区
         write_sram_to_sector(EWRAM_START_SECTOR + sector, flash_type_index);
     }
+}
+
+// 保存IWRAM和调色板到Flash扇区4
+__attribute__((target("arm"))) void save_iwram_palette_to_flash(int flash_type_index)
+{
+    volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+    
+    // 先清空SRAM（因为IWRAM+调色板不会占满64KB）
+    for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
+        sram[i] = 0;
+    }
+    
+    // 复制IWRAM (32KB) 到SRAM的0x0000偏移
+    volatile uint8_t *iwram = (volatile uint8_t*)0x03000000;
+    for (uint32_t i = 0; i < 0x8000; i++) {
+        sram[i] = iwram[i];
+    }
+    
+    // 复制调色板 (1KB) 到SRAM的0x8000偏移（与EZODE一致）
+    volatile uint8_t *palette = (volatile uint8_t*)0x05000000;
+    volatile uint8_t *sram_palette = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x400; i++) {
+        sram_palette[i] = palette[i];
+    }
+    
+    // 写入到扇区4
+    write_sram_to_sector(IWRAM_PALETTE_SECTOR, flash_type_index);
+}
+
+// 保存VRAM前64KB到Flash扇区5
+__attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_index)
+{
+    volatile uint8_t *vram = (volatile uint8_t*)0x06000000;
+    volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+    
+    // 复制VRAM前64KB到SRAM（8bit操作）
+    for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
+        sram[i] = vram[i];
+    }
+    
+    // 写入到扇区5
+    write_sram_to_sector(VRAM_FRONT_SECTOR, flash_type_index);
 }
 
 asm(R"(
