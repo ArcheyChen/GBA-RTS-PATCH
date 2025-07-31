@@ -518,7 +518,7 @@ int run_arm_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32_t
         "mov r1, #0xDF\n"		//切换到系统模式
         "msr cpsr_cf, r1\n"
         "nop\n"                     // 确保CPSR更新完成
-        "push {r0}\n"          // 保存CPSR到栈,注意，此时已经是系统栈
+        "push {r0,lr}\n"          // 保存CPSR到栈,注意，此时已经是系统栈
 
         "mov r4, sp\n"                    // 保存当前栈指针
         
@@ -537,7 +537,7 @@ int run_arm_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32_t
         "mov %[result], r0\n"             // 保存返回值
         "mov sp, r4\n"                    // 恢复栈指针(清空拷贝过来的函数代码占的空间)
 
-        "pop {r1}\n"                      // 恢复CPSR
+        "pop {r1,lr}\n"                      // 恢复CPSR
         "msr cpsr_cf, r1\n"               // 恢复CPSR,即，返回之前的模式（IRQ）
         
         : [result] "=r" (result)
