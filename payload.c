@@ -211,7 +211,7 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     *(volatile uint8_t*)(0x0E000000 + 3) = 0x80;
     
     // 从默认扇区恢复SRAM
-    restore_sram_from_sector(SRAM_SAVE_SECTOR);
+    // restore_sram_from_sector(SRAM_SAVE_SECTOR);
     
     // 跳转到原始入口点
     asm volatile(
@@ -283,7 +283,7 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
         save_vram_back_misc_to_flash(flash_type_index);
         
         // 恢复SRAM为原状
-        restore_sram_from_sector(SRAM_SAVE_SECTOR);
+        // restore_sram_from_sector(SRAM_SAVE_SECTOR);
     }
     
     // 禁用绿色交换
@@ -452,18 +452,18 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 恢复结束
     ////////////////////////////////////////////////////////////////////////////////////////
     
-    // 从扇区7恢复原始SRAM - 使用run_arm_from_ram从RAM执行
-    // 计算扇区7地址
-    uint32_t sram_sector_addr = flash_base_addr + SRAM_SAVE_SECTOR * SECTOR_SIZE;
+    // // 从扇区7恢复原始SRAM - 使用run_arm_from_ram从RAM执行
+    // // 计算扇区7地址
+    // uint32_t sram_sector_addr = flash_base_addr + SRAM_SAVE_SECTOR * SECTOR_SIZE;
     
-    // 调用flash_copy_to_sram函数（在RAM中执行）
-    // 获取flash_copy_to_sram的起始和结束地址
-    uint32_t copy_fn_start, copy_fn_end;
-    GET_REL_ADDR(flash_copy_to_sram_fn_start, copy_fn_start);
-    GET_REL_ADDR(flash_copy_to_sram_fn_end, copy_fn_end);
+    // // 调用flash_copy_to_sram函数（在RAM中执行）
+    // // 获取flash_copy_to_sram的起始和结束地址
+    // uint32_t copy_fn_start, copy_fn_end;
+    // GET_REL_ADDR(flash_copy_to_sram_fn_start, copy_fn_start);
+    // GET_REL_ADDR(flash_copy_to_sram_fn_end, copy_fn_end);
     
-    // 调用run_arm_from_ram来从Flash恢复SRAM
-    run_arm_from_ram(sram_sector_addr, SECTOR_SIZE, copy_fn_start, copy_fn_end);
+    // // 调用run_arm_from_ram来从Flash恢复SRAM
+    // run_arm_from_ram(sram_sector_addr, SECTOR_SIZE, copy_fn_start, copy_fn_end);
     
     // 禁用绿色交换
     *green_swap_reg = 0;
