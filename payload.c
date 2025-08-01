@@ -291,21 +291,22 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         //不知道为什么，有上面的判断反而会卡。不如就直接无脑存
         "call_handler:\n"
         // 匹配了其中一个热键，保存寄存器并调用处理函数
+        "mrs r3, SPSR\n"                 // 先读取SPSR到r3
         "adrl r12, spend_0x80\n"
         "ldr r12, [r12]\n"
-        "stmia r12!, {r4-r11,sp,lr}\n"
-        "mrs r3, SPSR\n"
-        "stmia r12!, {r3}\n"
+        "stmia r12!, {r3-r11,sp,lr}\n"   // 一次性保存r3(SPSR)到lr
         "\n"
         "push {r0,lr}\n"                  // 保存r0(0x04000000)和lr
         "bl keypad_process\n"
         "pop {r0,pc}\n"                   // 恢复r0并返回
     );
 }
-/*此时临时缓冲区内容:（与EZODE完全一致）
+/*此时临时缓冲区内容:（优化后的布局）
 
-0x00-0x27 (40字节): IRQ模式下的r4-r11,sp,lr寄存器
-0x28-0x2B (4字节): IRQ模式下的SPSR寄存器*/
+0x00-0x03 (4字节): IRQ模式下的SPSR寄存器(r3)
+0x04-0x23 (32字节): IRQ模式下的r4-r11寄存器
+0x24-0x27 (4字节): IRQ模式下的sp寄存器
+0x28-0x2B (4字节): IRQ模式下的lr寄存器*/
 
 // C语言版本的按键中断处理程序  
 __attribute__((target("arm"))) void keypad_process(void)
@@ -634,16 +635,15 @@ __attribute__((target("arm"))) void load_from_flash(void)
         "mrs r0, cpsr\n"                // 保存当前CPSR
         "adrl r7, spend_0x80\n"         // 
         "ldr r7, [r7]\n"               // 读取spend_0x80地址
-        "add r7, #0x28\n"          // 偏移到保存SPSR的地址
 
-        "ldmia r7!,{r2}\n"      //现在r7 = 0x28+4 = 0x2C
+        "ldmia r7!,{r2}\n"      // 读取SPSR (r7从0x00开始，读后r7=0x04)
         "msr spsr_cxsf, r2\n"          // 恢复SPSR irq状态
 
         "mov r1,#0xDF\n"          // 切换到系统模式
         "msr cpsr_cf, r1\n"
         "nop\n"
         
-        "add r7,#0x4\n"          // 现在r7 = 0x2C+4 = 0x30
+        "add r7,#0x2C\n"          // 跳过r4-r11,sp,lr，到达系统模式SP/LR位置 (r7 = 0x04+0x2C = 0x30)
         "ldmia r7!,{r13-r14}\n" // 恢复r13-r14,即SP和LR寄存器
         
         "msr cpsr_cf, r0\n"          // 恢复CPSR,即，切换回到IRQ模式
@@ -679,7 +679,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
         
         "adrl r12, spend_0x80\n"
         "ldr r12, [r12]\n"
-        "ldmia r12!, {r4-r11,sp,lr}\n"
+        "ldmia r12!, {r3-r11,sp,lr}\n"
         "\n"
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
