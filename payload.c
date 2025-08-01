@@ -604,6 +604,23 @@ __attribute__((target("arm"))) void load_from_flash(void)
     volatile uint16_t *flash_dma = (volatile uint16_t*)(flash_sector6_u8 + 0x8500 + 0x34);
     io_base[0x00C6 / 2] = *flash_dma;  // DMA1CNT_H
     
+    /* ============================================================
+     * 额外添加：恢复32位背景变换寄存器
+     * 这些是我们自己添加的，EZODE原版没有
+     * 从已保存的IO寄存器数据中恢复BG2X/Y和BG3X/Y
+     * ============================================================ */
+    volatile uint32_t *io32_base = (volatile uint32_t*)0x04000000;
+    volatile uint32_t *flash_io32 = (volatile uint32_t*)flash_io;
+    
+    // 恢复BG2X/Y和BG3X/Y (各4字节)
+    io32_base[0x0028/4] = flash_io32[0x0028/4];  // BG2X
+    io32_base[0x002C/4] = flash_io32[0x002C/4];  // BG2Y
+    io32_base[0x0038/4] = flash_io32[0x0038/4];  // BG3X
+    io32_base[0x003C/4] = flash_io32[0x003C/4];  // BG3Y
+    /* ============================================================
+     * 额外添加部分结束
+     * ============================================================ */
+    
     // 清零中断标志寄存器 IF (Interrupt Request Flags / IRQ Acknowledge)
     io_base[0x0202 / 2] = 0;
     
