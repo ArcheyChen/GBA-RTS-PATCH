@@ -11,7 +11,7 @@ __attribute__((section(".text"))) const uint32_t save_size = 0x20000;//可能会
 __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint32_t)patched_entrypoint;
 
 // RTS存档标志字符串 - 必须放在.text段
-__attribute__((section(".text"))) const char rts_flag_string[] = "EZ-OmegaRTCFILE.";
+__attribute__((section(".text"))) const char rts_flag_string[] = "Ausar'S-RTSFILE.";
 
 // IO寄存器恢复列表 - 必须放在.text段（与EZODE一致）
 __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] = {
@@ -210,7 +210,7 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
     // 锁定369in1 mapper
     *(volatile uint8_t*)(0x0E000000 + 3) = 0x80;
     
-    // 从默认扇区恢复SRAM
+    // 从默认扇区恢复SRAM 如果是需要免电池存档那就需要
     // restore_sram_from_sector(SRAM_SAVE_SECTOR);
     
     // 跳转到原始入口点
@@ -283,7 +283,7 @@ __attribute__((target("arm"))) void patched_entrypoint(void)
         save_vram_back_misc_to_flash(flash_type_index);
         
         // 恢复SRAM为原状
-        // restore_sram_from_sector(SRAM_SAVE_SECTOR);
+        restore_sram_from_sector(SRAM_SAVE_SECTOR);
     }
     
     // 禁用绿色交换
