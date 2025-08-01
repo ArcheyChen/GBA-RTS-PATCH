@@ -95,21 +95,32 @@ void save_vram_front_to_flash(int flash_type_index);
 void save_vram_back_misc_to_flash(int flash_type_index);
 bool check_rts_save_flag(void);
 
-// 汇编入口函数 - 保存寄存器并调用keypad_process
-asm(
-"    .arm\n"
-"    .align\n"
-"keypad_irq_handler:\n"
-"    adrl r12, spend_0x80\n"
-"    ldr r12, [r12]\n"
-"    stmia r12!, {r4-r11,sp,lr}\n"
-"    mrs r2, SPSR\n"
-"    stmia r12!, {r2}\n"
-"    \n"
-"    push {lr}\n"
-"    bl keypad_process\n"
-"    pop {pc}\n"
-);
+// 裸汇编入口函数 - 调用init_before_game然后跳转到原始入口点
+__attribute__((naked, target("arm"))) void patched_entrypoint(void)
+{
+    asm volatile(
+        "push {lr}\n"
+        "bl init_before_game\n"          // 调用初始化函数
+        "pop {lr}\n"
+        "mov pc, r0\n"                   // 跳转到init函数告诉的原始入口点地址
+    );
+}
+
+// 裸汇编中断处理函数 - 保存寄存器并调用keypad_process
+__attribute__((naked, target("arm"))) void keypad_irq_handler(void)
+{
+    asm volatile(
+        "adrl r12, spend_0x80\n"
+        "ldr r12, [r12]\n"
+        "stmia r12!, {r4-r11,sp,lr}\n"
+        "mrs r2, SPSR\n"
+        "stmia r12!, {r2}\n"
+        "\n"
+        "push {lr}\n"
+        "bl keypad_process\n"
+        "pop {pc}\n"
+    );
+}
 /*此时临时缓冲区内容:（与EZODE完全一致）
 
 0x00-0x27 (40字节): IRQ模式下的r4-r11,sp,lr寄存器
@@ -200,7 +211,7 @@ __attribute__((target("arm"))) void keypad_process(void)
 }
 
 
-// C语言版本的游戏初始化函数（位置无关代码）
+// C语言版本的游戏初始化函数，会通过返回值告知原始入口点
 __attribute__((target("arm"))) uint32_t init_before_game(void)
 {
     // 使用宏获取相对地址，避免GOT依赖
@@ -222,17 +233,6 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
     
     // 返回原始入口点地址
     return header->original_entrypoint;
-}
-
-// 裸汇编入口函数 - 调用init_before_game然后跳转到原始入口点
-__attribute__((naked, target("arm"))) void patched_entrypoint(void)
-{
-    asm volatile(
-        "push {lr}\n"
-        "bl init_before_game\n"          // 调用初始化函数
-        "pop {lr}\n"
-        "mov pc, r0\n"                   // 跳转到init函数告诉的原始入口点地址
-    );
 }
 
 
