@@ -92,7 +92,7 @@ asm(
 "    .arm\n"
 "    .align\n"
 "keypad_irq_handler:\n"
-"    ldr r12, spend_0x80\n"
+"    adrl r12, spend_0x80\n"
 "    ldr r12, [r12]\n"
 "    stmia r12!, {r4-r11,sp,lr}\n"
 "    mrs r2, SPSR\n"
