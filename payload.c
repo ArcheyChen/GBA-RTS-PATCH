@@ -16,7 +16,6 @@ __attribute__((section(".text"))) const struct PayloadHeader payload_header = {
     .save_size = 0x20000,
     .patched_entrypoint_addr = (uint32_t)patched_entrypoint
 };
-__attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint32_t)patched_entrypoint;
 
 // RTS存档标志字符串 - 必须放在.text段
 __attribute__((section(".text"))) const char rts_flag_string[] = "Ausar'S-RTSFILE.";
@@ -311,13 +310,8 @@ __attribute__((target("arm"))) void copy_flash_to_sram(uint32_t flash_addr, uint
         // 计算当前bank (根据SRAM地址的bit 16)
         uint16_t current_bank = ((uint32_t)sram_dst >> 16) & 1;
         *bank_reg = current_bank;
-        
-        // 复制一个字节
-        *sram_dst = *flash_src;
-        
-        // 递增指针
-        flash_src++;
-        sram_dst++;
+        // 从Flash复制到SRAM
+        *sram_dst++ = *flash_src++;
     }
     
     // 设置bank为0（为不支持bank的软件）
@@ -459,20 +453,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
     ////////////////////////////////////////////////////////////////////////////////////////
     // 恢复结束
     ////////////////////////////////////////////////////////////////////////////////////////
-    
-    // // 从扇区7恢复原始SRAM - 使用run_arm_from_ram从RAM执行
-    // // 计算扇区7地址
-    // uint32_t sram_sector_addr = flash_base_addr + SRAM_SAVE_SECTOR * SECTOR_SIZE;
-    
-    // // 调用flash_copy_to_sram函数（在RAM中执行）
-    // // 获取flash_copy_to_sram的起始和结束地址
-    // uint32_t copy_fn_start, copy_fn_end;
-    // GET_REL_ADDR(flash_copy_to_sram_fn_start, copy_fn_start);
-    // GET_REL_ADDR(flash_copy_to_sram_fn_end, copy_fn_end);
-    
-    // // 调用run_arm_from_ram来从Flash恢复SRAM
-    // run_arm_from_ram(sram_sector_addr, SECTOR_SIZE, copy_fn_start, copy_fn_end);
-    
+
     // 禁用绿色交换
     *green_swap_reg = 0;
     
@@ -485,9 +466,6 @@ __attribute__((target("arm"))) void load_from_flash(void)
         "\n"
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
-        :
-        :
-        : "r0", "r12", "memory"
     );
 }
     
