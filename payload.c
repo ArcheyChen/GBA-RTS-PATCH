@@ -261,33 +261,34 @@ __attribute__((naked, target("arm"))) void patched_entrypoint(void)
 __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
 {
     asm volatile(
-        // r0 = 0x04000000 (GBA的IRQ handler会预设这个值)
-        "ldr r1, [r0, #0x200]\n"          // 读取IE/IF寄存器
-        "tst r1, #0x10000\n"              // 检查IF的bit16
-        "tsteq r1, #0x10000000\n"         // 检查IE的bit28
-        "ldreq pc, [r0, #-0xC]\n"         // 如果都不是，跳到原始中断处理程序
+        // // r0 = 0x04000000 (GBA的IRQ handler会预设这个值)
+        // "ldr r1, [r0, #0x200]\n"          // 读取IE/IF寄存器
+        // "tst r1, #0x10000\n"              // 检查IF的bit16
+        // "tsteq r1, #0x10000000\n"         // 检查IE的bit28
+        // "ldreq pc, [r0, #-0xC]\n"         // 如果都不是，跳到原始中断处理程序
         
         // 读取按键状态
-        "add r1, r0, #0x130\n"            // r5 = 0x04000130 (KEYINPUT地址)
-        "ldrh r2, [r1]\n"                 // 读取按键值（16位）
+        // "add r1, r0, #0x130\n"            // r5 = 0x04000130 (KEYINPUT地址)
+        // "ldrh r2, [r1]\n"                 // 读取按键值（16位）
         
-        // 检查是否是存档热键 (L+R+START)
-        "adrl r3, lr_start_key\n"         // 获取存档热键地址
-        "ldr r3, [r3]\n"                  // 加载存档热键值
-        "and r4, r2, r3\n"                // AND运算
-        "cmp r4, #0\n"                    // 检查是否为0
-        "beq call_handler\n"              // 如果为0，说明按键被按下
+        // // 检查是否是存档热键 (L+R+START)
+        // "ldr r3, lr_start_key\n"         // 获取存档热键地址
+        // // "ldr r3, [r3]\n"                  // 加载存档热键值
+        // "and r4, r2, r3\n"                // AND运算
+        // "cmp r4, #0\n"                    // 检查是否为0
+        // "beq call_handler\n"              // 如果为0，说明按键被按下
         
-        // 检查是否是读档热键 (L+R+SELECT)
-        "adrl r3, lr_select_key\n"        // 获取读档热键地址
-        "ldr r3, [r3]\n"                  // 加载读档热键值
-        "and r4, r2, r3\n"                // AND运算
-        "cmp r4, #0\n"                    // 检查是否为0
-        "beq call_handler\n"              // 如果为0，说明按键被按下
+        // // 检查是否是读档热键 (L+R+SELECT)
+        // "ldr r3, lr_select_key\n"        // 获取读档热键地址
+        // // "ldr r3, [r3]\n"                  // 加载读档热键值
+        // "and r4, r2, r3\n"                // AND运算
+        // "cmp r4, #0\n"                    // 检查是否为0
+        // "beq call_handler\n"              // 如果为0，说明按键被按下
         
-        // 都不匹配，跳到原始中断处理程序
-        "ldr pc, [r0, #-0xC]\n"           // 跳转到原始IRQ处理程序
+        // // 都不匹配，跳到原始中断处理程序
+        // "ldr pc, [r0, #-0xC]\n"           // 跳转到原始IRQ处理程序
         
+        //不知道为什么，有上面的判断反而会卡。不如就直接无脑存
         "call_handler:\n"
         // 匹配了其中一个热键，保存寄存器并调用处理函数
         "adrl r12, spend_0x80\n"
@@ -315,12 +316,12 @@ __attribute__((target("arm"))) void keypad_process(void)
     
     // 按键组合定义 (GBA按键反相: 按下=0, 未按下=1)
     // L=0x200, R=0x100, START=0x08, SELECT=0x04
-    // uint16_t lr_start = 0x308;   // L+R+START (存档)
-    // uint16_t lr_select = 0x304;  // L+R+SELECT (读档)
-    uint32_t lr_start;   // L+R+START (存档)
-    uint32_t lr_select;  // L+R+SELECT (读档)
-    GET_REL_VALUE(lr_start_key, lr_start);
-    GET_REL_VALUE(lr_select_key, lr_select);
+    uint16_t lr_start = 0x308;   // L+R+START (存档)
+    uint16_t lr_select = 0x304;  // L+R+SELECT (读档)
+    // uint32_t lr_start;   // L+R+START (存档)
+    // uint32_t lr_select;  // L+R+SELECT (读档)
+    // GET_REL_VALUE(lr_start_key, lr_start);
+    // GET_REL_VALUE(lr_select_key, lr_select);
 
     // 检查是否按下L+R+START (存档)
     bool need_save = (keypad_value & lr_start) == 0;
@@ -540,11 +541,6 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 恢复IWRAM和调色板 - 从扇区4
     volatile uint32_t *flash_sector4 = (volatile uint32_t*)(flash_base_addr + IWRAM_PALETTE_SECTOR * SECTOR_SIZE);
     
-    // 恢复IWRAM (32KB) - 使用u32拷贝
-    volatile uint32_t *iwram = (volatile uint32_t*)0x03000000;
-    for (uint32_t i = 0; i < 0x8000 / 4; i++) {
-        iwram[i] = flash_sector4[i];
-    }
     
     // 恢复调色板 (1KB) - 使用u32拷贝
     volatile uint32_t *palette = (volatile uint32_t*)0x05000000;
@@ -631,6 +627,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
         spend[i] = flash_spend[i];
     }
     
+        // 恢复IWRAM和调色板 - 从扇区4
     // 恢复系统模式SP和LR寄存器
     // 这需要切换到系统模式，恢复寄存器，然后切换回来
     asm volatile(
@@ -652,9 +649,22 @@ __attribute__((target("arm"))) void load_from_flash(void)
         "msr cpsr_cf, r0\n"          // 恢复CPSR,即，切换回到IRQ模式
         "nop\n"
 
+        // 恢复IWRAM - 纯寄存器实现
+        "ldr r2, %[flash_base]\n"           // r2 = flash基地址
+        "mov r3, #0x40000\n"                // r3 = IWRAM_PALETTE_SECTOR * SECTOR_SIZE
+        "add r2, r2, r3\n"                  // r2 = flash扇区4地址
+        "mov r3, #0x03000000\n"             // r3 = IWRAM地址
+        "mov r4, #0x8000\n"                 // r4 = 32KB计数器
+        
+        "1:\n"                              // 循环标签
+        "ldr r5, [r2], #4\n"                // 从flash读取4字节，并递增r2
+        "str r5, [r3], #4\n"                // 写入IWRAM，并递增r3
+        "subs r4, r4, #4\n"                 // 递减计数器
+        "bne 1b\n"                          // 如果不为0，继续循环
+
         :
-        : 
-        : "r0", "r1", "r2", "r7", "memory"
+        : [flash_base] "m" (flash_base_addr)
+        : "r0", "r1", "r2", "r3", "r4", "r5", "r7", "memory"
     );
     
     ////////////////////////////////////////////////////////////////////////////////////////
