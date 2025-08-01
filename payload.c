@@ -648,22 +648,8 @@ __attribute__((target("arm"))) void load_from_flash(void)
         
         "msr cpsr_cf, r0\n"          // 恢复CPSR,即，切换回到IRQ模式
         "nop\n"
-
-        // 恢复IWRAM - 纯寄存器实现
-        "ldr r2, %[flash_base]\n"           // r2 = flash基地址
-        "mov r3, #0x40000\n"                // r3 = IWRAM_PALETTE_SECTOR * SECTOR_SIZE
-        "add r2, r2, r3\n"                  // r2 = flash扇区4地址
-        "mov r3, #0x03000000\n"             // r3 = IWRAM地址
-        "mov r4, #0x8000\n"                 // r4 = 32KB计数器
-        
-        "1:\n"                              // 循环标签
-        "ldr r5, [r2], #4\n"                // 从flash读取4字节，并递增r2
-        "str r5, [r3], #4\n"                // 写入IWRAM，并递增r3
-        "subs r4, r4, #4\n"                 // 递减计数器
-        "bne 1b\n"                          // 如果不为0，继续循环
-
         :
-        : [flash_base] "m" (flash_base_addr)
+        :
         : "r0", "r1", "r2", "r3", "r4", "r5", "r7", "memory"
     );
     
@@ -677,12 +663,29 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 恢复IRQ模式的寄存器并跳转到原始中断处理程序
     // 与EZODE实现一致
     asm volatile(
+        
+        // 恢复IWRAM - 纯寄存器实现
+        "ldr r2, %[flash_base]\n"           // r2 = flash基地址
+        "mov r3, #0x40000\n"                // r3 = IWRAM_PALETTE_SECTOR * SECTOR_SIZE
+        "add r2, r2, r3\n"                  // r2 = flash扇区4地址
+        "mov r3, #0x03000000\n"             // r3 = IWRAM地址
+        "mov r4, #0x8000\n"                 // r4 = 32KB计数器
+        
+        "1:\n"                              // 循环标签
+        "ldr r5, [r2], #4\n"                // 从flash读取4字节，并递增r2
+        "str r5, [r3], #4\n"                // 写入IWRAM，并递增r3
+        "subs r4, r4, #4\n"                 // 递减计数器
+        "bne 1b\n"                          // 如果不为0，继续循环
+        
         "adrl r12, spend_0x80\n"
         "ldr r12, [r12]\n"
         "ldmia r12!, {r4-r11,sp,lr}\n"
         "\n"
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
+        :
+        : [flash_base] "m" (flash_base_addr)
+        :
     );
 }
     
