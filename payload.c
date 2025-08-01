@@ -85,6 +85,47 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
     0x0204,  // WAITCNT   - Game Pak Waitstate Control
     0x0208,  // IME       - Interrupt Master Enable Register
     
+    /* ============================================================
+     * 以下是额外添加的寄存器，EZODE原版没有包含
+     * 这些可能会提高某些游戏的兼容性，但也可能引入问题
+     * ============================================================ */
+    
+    // 背景滚动偏移 - 保持画面位置不变
+    0x0010,  // BG0HOFS   - BG0 X-Offset
+    0x0012,  // BG0VOFS   - BG0 Y-Offset
+    0x0014,  // BG1HOFS   - BG1 X-Offset
+    0x0016,  // BG1VOFS   - BG1 Y-Offset
+    0x0018,  // BG2HOFS   - BG2 X-Offset
+    0x001A,  // BG2VOFS   - BG2 Y-Offset
+    0x001C,  // BG3HOFS   - BG3 X-Offset
+    0x001E,  // BG3VOFS   - BG3 Y-Offset
+    
+    // 背景变换参数 - Mode 1/2 游戏需要
+    0x0020,  // BG2PA     - BG2 Rotation/Scaling Parameter A
+    0x0022,  // BG2PB     - BG2 Rotation/Scaling Parameter B
+    0x0024,  // BG2PC     - BG2 Rotation/Scaling Parameter C
+    0x0026,  // BG2PD     - BG2 Rotation/Scaling Parameter D
+    // 注意: BG2X/Y (0x28/0x2C) 是32位寄存器，需要特殊处理
+    0x0030,  // BG3PA     - BG3 Rotation/Scaling Parameter A
+    0x0032,  // BG3PB     - BG3 Rotation/Scaling Parameter B
+    0x0034,  // BG3PC     - BG3 Rotation/Scaling Parameter C
+    0x0036,  // BG3PD     - BG3 Rotation/Scaling Parameter D
+    // 注意: BG3X/Y (0x38/0x3C) 是32位寄存器，需要特殊处理
+    
+    // 窗口尺寸 - 保持窗口特效
+    0x0040,  // WIN0H     - Window 0 Horizontal Dimensions
+    0x0042,  // WIN1H     - Window 1 Horizontal Dimensions
+    0x0044,  // WIN0V     - Window 0 Vertical Dimensions
+    0x0046,  // WIN1V     - Window 1 Vertical Dimensions
+    
+    // 特效参数
+    0x004C,  // MOSAIC    - Mosaic Size
+    0x0054,  // BLDY      - Brightness (Fade-In/Out) Coefficient
+    
+    /* ============================================================
+     * 额外添加部分结束
+     * ============================================================ */
+    
     0xFF00   // 结束标记
 };
 
@@ -92,32 +133,10 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
  * 
  * LCD寄存器：
  * 0x0006  VCOUNT    - Vertical Counter (只读，不需要恢复)
- * 0x0010  BG0HOFS   - BG0 X-Offset
- * 0x0012  BG0VOFS   - BG0 Y-Offset
- * 0x0014  BG1HOFS   - BG1 X-Offset
- * 0x0016  BG1VOFS   - BG1 Y-Offset
- * 0x0018  BG2HOFS   - BG2 X-Offset
- * 0x001A  BG2VOFS   - BG2 Y-Offset
- * 0x001C  BG3HOFS   - BG3 X-Offset
- * 0x001E  BG3VOFS   - BG3 Y-Offset
- * 0x0020  BG2PA     - BG2 Rotation/Scaling Parameter A
- * 0x0022  BG2PB     - BG2 Rotation/Scaling Parameter B
- * 0x0024  BG2PC     - BG2 Rotation/Scaling Parameter C
- * 0x0026  BG2PD     - BG2 Rotation/Scaling Parameter D
- * 0x0028  BG2X      - BG2 Reference Point X-Coordinate (4字节)
- * 0x002C  BG2Y      - BG2 Reference Point Y-Coordinate (4字节)
- * 0x0030  BG3PA     - BG3 Rotation/Scaling Parameter A
- * 0x0032  BG3PB     - BG3 Rotation/Scaling Parameter B
- * 0x0034  BG3PC     - BG3 Rotation/Scaling Parameter C
- * 0x0036  BG3PD     - BG3 Rotation/Scaling Parameter D
- * 0x0038  BG3X      - BG3 Reference Point X-Coordinate (4字节)
- * 0x003C  BG3Y      - BG3 Reference Point Y-Coordinate (4字节)
- * 0x0040  WIN0H     - Window 0 Horizontal Dimensions
- * 0x0042  WIN1H     - Window 1 Horizontal Dimensions
- * 0x0044  WIN0V     - Window 0 Vertical Dimensions
- * 0x0046  WIN1V     - Window 1 Vertical Dimensions
- * 0x004C  MOSAIC    - Mosaic Size
- * 0x0054  BLDY      - Brightness (Fade-In/Out) Coefficient
+ * 0x0028  BG2X      - BG2 Reference Point X-Coordinate (4字节，需要特殊处理)
+ * 0x002C  BG2Y      - BG2 Reference Point Y-Coordinate (4字节，需要特殊处理)
+ * 0x0038  BG3X      - BG3 Reference Point X-Coordinate (4字节，需要特殊处理)
+ * 0x003C  BG3Y      - BG3 Reference Point Y-Coordinate (4字节，需要特殊处理)
  * 
  * 音频寄存器：
  * 0x0064  SOUND1CNT_X - Channel 1 Frequency/Control
