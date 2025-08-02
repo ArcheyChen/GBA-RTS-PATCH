@@ -1,14 +1,10 @@
 // Payload头部必须在文件开头，patcher需要
 #include <stdint.h>
 #include <stdbool.h>
+#include "payload_header.h"
 
 // 前向声明
 void patched_entrypoint(void);
-struct PayloadHeader{
-    uint32_t original_entrypoint; // 游戏原始入口点地址
-    uint32_t save_size;           // 存档大小
-    uint32_t patched_entrypoint_addr; // 补丁入口点地址
-};
 
 // Payload头部结构 - 必须在文件最开始,然后必须是强行改为text，否则无法获取相对偏移 
 __attribute__((section(".text"))) const struct PayloadHeader payload_header = {

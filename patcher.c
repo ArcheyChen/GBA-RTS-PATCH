@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "payload_bin.h"
+#include "payload_header.h"
 
 #ifdef _MSC_VER
 #define strcasecmp _stricmp
@@ -17,12 +18,6 @@ uint32_t romsize;
 uint8_t rom[0x02000000];
 char signature[] = "<3 from Maniac";
 #define RTS_SIZE (448 * 1024)  // 448KB
-
-enum payload_offsets {
-    ORIGINAL_ENTRYPOINT_ADDR,
-    SAVE_SIZE,
-    PATCHED_ENTRYPOINT
-};
 
 
 static uint8_t *memfind(uint8_t *haystack, size_t haystack_size, uint8_t *needle, size_t needle_size, int stride)
@@ -173,7 +168,8 @@ int main(int argc, char **argv)
     // 设置payload中的save_size字段（见payload.c头部，决定SRAM保存区大小）
     // payload.c: __attribute__((section(".text"))) const uint32_t save_size = 0x20000;
     // 注意：虽然预留了512KB空间，但实际SRAM拷贝仍然只使用64KB
-    SAVE_SIZE[(uint32_t*) &rom[payload_base]] = 64*1024;
+    struct PayloadHeader *header = (struct PayloadHeader*)&rom[payload_base];
+    header->save_size = 64*1024;
     //TODO:每个游戏大小都应该不一样的。现在先写死了64KB（512Kb）
     
     // 计算并输出SRAM保存空间的基址（在payload之后）
@@ -246,13 +242,14 @@ int main(int argc, char **argv)
     unsigned long original_entrypoint_address = 0x08000000 + 8 + (original_entrypoint_offset << 2);
     printf("Original offset was %lx\n", original_entrypoint_offset);
     // 写入payload的original_entrypoint字段
-    ORIGINAL_ENTRYPOINT_ADDR[(uint32_t*) &rom[payload_base]] = original_entrypoint_address;
+    header->original_entrypoint = original_entrypoint_address;
 
     // 计算payload中patched_entrypoint的实际ROM地址
     // payload.c: __attribute__((section(".text"))) const uint32_t patched_entrypoint_addr = (uint32_t)patched_entrypoint;
-    unsigned long new_entrypoint_address = 0x08000000 + payload_base + PATCHED_ENTRYPOINT[(uint32_t*) payload_bin];
+    struct PayloadHeader *payload_header_in_bin = (struct PayloadHeader*)payload_bin;
+    unsigned long new_entrypoint_address = 0x08000000 + payload_base + payload_header_in_bin->patched_entrypoint_addr;
     // 修改ROM头部的入口跳转指令，使其跳转到payload的patched_entrypoint
-    0[(uint32_t*) rom] = 0xea000000 | (new_entrypoint_address - 0x08000008) >> 2;
+    ((uint32_t*)rom)[0] = 0xea000000 | (new_entrypoint_address - 0x08000008) >> 2;
 
     // 写入新文件名，后缀为_keypad.gba
     char *suffix = "_keypad.gba";
