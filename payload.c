@@ -18,8 +18,6 @@ __attribute__((section(".text"))) const struct PayloadHeader payload_header = {
 #define SAVE_KEYS 0x304  
 // L+R+SELECT (读档)
 
-// __attribute__((section(".text"))) const uint32_t lr_start_key = 0x308;   // L+R+START (存档)
-// __attribute__((section(".text"))) const uint32_t lr_select_key = 0x304;  // L+R+SELECT (读档)
 // RTS存档标志字符串 - 必须放在.text段
 __attribute__((section(".text"))) const char rts_flag_string[] = "Ausar'S-RTSFILE.";
 
