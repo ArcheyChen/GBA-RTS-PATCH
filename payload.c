@@ -625,12 +625,12 @@ __attribute__((target("arm"))) void load_from_flash(void)
         // 恢复IWRAM和调色板 - 从扇区4
     // 恢复系统模式SP和LR寄存器 - 直接从Flash读取
     // 这需要切换到系统模式，恢复寄存器，然后切换回来
+    volatile uint8_t *spend_0x80_on_flash = flash_sector6_u8 + 0x8400;
     asm volatile(
         "mrs r0, cpsr\n"                // 保存当前CPSR
         
         // 直接从Flash读取SPSR
-        "ldr r7, %[flash_sector6]\n"    // r7 = flash扇区6基地址
-        "add r7, r7, #0x8400\n"         // r7 = flash扇区6 + 0x8400 (spend_0x80位置)
+        "ldr r7, %[spend_0x80]\n"    // r7 = spend_0x80在flash上的地址
         "ldr r2, [r7]\n"                // 直接从Flash读取SPSR
         "msr spsr_cxsf, r2\n"           // 恢复SPSR irq状态
 
@@ -644,7 +644,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
         "msr cpsr_cf, r0\n"             // 恢复CPSR,即，切换回到IRQ模式
         "nop\n"
         :
-        : [flash_sector6] "m" (flash_sector6_u8)
+        : [spend_0x80] "m" (spend_0x80_on_flash)
         : "r0", "r1", "r2", "r7", "memory"
     );
     
@@ -671,9 +671,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
     asm volatile(
         
         // 恢复IWRAM - 纯寄存器实现
-        "ldr r2, %[flash_base]\n"           // r2 = flash基地址
-        "mov r3, #0x50000\n"                // r3 = IWRAM_PALETTE_SECTOR * SECTOR_SIZE
-        "add r2, r2, r3\n"                  // r2 = flash扇区4地址
+        "ldr r2, %[sector_addr]\n"           // r2 = flash基地址
         "mov r3, #0x03000000\n"             // r3 = IWRAM地址
         "mov r4, #0x8000\n"                 // r4 = 32KB计数器
         
@@ -690,7 +688,7 @@ __attribute__((target("arm"))) void load_from_flash(void)
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
         :
-        : [flash_base] "m" (flash_base_addr)
+        : [sector_addr] "m" (flash_sector4)
         :
     );
 }
