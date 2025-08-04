@@ -588,9 +588,12 @@ __attribute__((target("arm"))) void load_from_flash(void)
         io_base[offset / 2] = value;
     }
     
-    // 额外恢复DMA1控制寄存器 - 从扇区6的0x8500+0x34偏移
-    volatile uint16_t *flash_dma = (volatile uint16_t*)(flash_sector6_u8 + 0x8500 + 0x34);
-    io_base[0x00C6 / 2] = *flash_dma;  // DMA1CNT_H
+    // 额外恢复DMA控制寄存器 - 从扇区6的spend_0x80+0x40位置读取
+    volatile uint16_t *flash_dma = (volatile uint16_t*)(flash_sector6_u8 + 0x8400 + 0x40);
+    io_base[0x00BA / 2] = *flash_dma++;  // DMA0CNT_H
+    io_base[0x00C6 / 2] = *flash_dma++;  // DMA1CNT_H 
+    io_base[0x00D2 / 2] = *flash_dma++;  // DMA2CNT_H
+    io_base[0x00DE / 2] = *flash_dma++;  // DMA3CNT_H
     
     /* ============================================================
      * 额外添加：恢复32位背景变换寄存器
@@ -643,6 +646,17 @@ __attribute__((target("arm"))) void load_from_flash(void)
         :
         : "r0", "r1", "r2", "r3", "r4", "r5", "r7", "memory"
     );
+    
+    ////////////////////////////////////////////////////////////////////////////////////////
+    // 音频寄存器恢复 - 直接从Flash恢复到硬件寄存器
+    ////////////////////////////////////////////////////////////////////////////////////////
+    
+    // 恢复音频寄存器 (0x4000060-0x4000090) - 从扇区6的0x9060偏移
+    volatile uint8_t *flash_audio = flash_sector6_u8 + 0x9060;
+    volatile uint8_t *audio_reg = (volatile uint8_t*)0x04000060;
+    for (uint32_t i = 0; i < 0x30; i++) {  // 48字节
+        audio_reg[i] = flash_audio[i];
+    }
     
     ////////////////////////////////////////////////////////////////////////////////////////
     // 恢复结束
@@ -1151,28 +1165,20 @@ __attribute__((target("arm"))) void restore_sram_from_sector(int sector_num)
 // 检查RTS存档标志是否有效
 __attribute__((target("arm"))) bool check_rts_save_flag(void)
 {
-    // 获取spend_0x80地址
-    volatile uint8_t *spend = (volatile uint8_t*)SPEND_0x80_ADDR;
-    
     // 计算扇区6的flash地址 + 0xFFF0偏移
     uint32_t flash_sector_addr;
     GET_REL_ADDR(flash_save_sector, flash_sector_addr);
     uint32_t flag_flash_addr = flash_sector_addr + (VRAM_BACK_MISC_SECTOR * SECTOR_SIZE) + 0xFFF0;
-    
-    // 从flash复制16字节标志到spend_0x80
-    volatile uint8_t *flash_flag = (volatile uint8_t*)flag_flash_addr;
-    for (uint32_t i = 0; i < 16; i++) {
-        spend[i] = flash_flag[i];
-    }
     
     // 获取RTS标志字符串地址
     uint32_t expected_flag_addr;
     GET_REL_ADDR(rts_flag_string, expected_flag_addr);
     const char *expected_flag = (const char*)expected_flag_addr;
     
-    // 检查标志是否匹配
+    // 直接从Flash读取并比较标志，不使用spend缓冲
+    volatile uint8_t *flash_flag = (volatile uint8_t*)flag_flash_addr;
     for (uint32_t i = 0; i < 16; i++) {
-        if (spend[i] != expected_flag[i]) {
+        if (flash_flag[i] != expected_flag[i]) {
             return false;
         }
     }
