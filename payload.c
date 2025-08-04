@@ -289,7 +289,7 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "b keypad_process\n"
     );
 }
-/*此时临时缓冲区内容:（优化后的布局）
+/*此时临时缓冲区内容:（优化后的布局，只需60字节）
 
 0x00-0x03 (4字节): IRQ模式下的SPSR寄存器(r3)
 0x04-0x23 (32字节): IRQ模式下的r4-r11寄存器  
@@ -298,10 +298,10 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
 0x2C-0x2F (4字节): 空洞
 0x30-0x33 (4字节): 系统模式的SP
 0x34-0x37 (4字节): 系统模式的LR
-0x38-0x3F (8字节): 空洞
+0x38-0x3B (4字节): 空洞
 0x40-0x47 (8字节): DMA控制寄存器(DMA0-3的CNT_H)
-0x48-0x77 (48字节): 音频寄存器(仅在save_misc_to_flash中临时保存)
-0x78-0x7F (8字节): 空洞
+总共使用: 4+32+4+4+4+4+8 = 60字节
+音频寄存器在save_misc_to_flash中直接从硬件读取并写入SRAM
 */
 __attribute__((target("arm"))) int detect_keys(void)
 {
@@ -612,10 +612,10 @@ __attribute__((target("arm"))) void load_from_flash(void)
     // 清零中断标志寄存器 IF (Interrupt Request Flags / IRQ Acknowledge)
     io_base[0x0202 / 2] = 0;
     
-    // 恢复spend_0x80区域（0x80字节）- 从扇区6的0x8400偏移 - 使用u32拷贝
+    // 恢复spend_0x80区域（60字节）- 从扇区6的0x8400偏移 - 使用u32拷贝
     volatile uint32_t *spend = (volatile uint32_t*)SPEND_0x80_ADDR;
     volatile uint32_t *flash_spend = (volatile uint32_t*)(flash_sector6_u8 + 0x8400);
-    for (uint32_t i = 0; i < 0x80 / 4; i++) {
+    for (uint32_t i = 0; i < 60 / 4; i++) {  // 60字节 = 15个32位字
         spend[i] = flash_spend[i];
     }
     
@@ -798,8 +798,8 @@ asm(".align 4\n"
 void __attribute__((target("arm"))) erase_flash_1(unsigned sa, unsigned size)
 {
     // Erase flash sectors based on size
-    // Flash type 1 typically has 64KB sectors
-    unsigned sector_size = 0x10000; // 64KB
+    // Flash type 1 typically has 128KB sectors
+    unsigned sector_size = 0x20000; // 128KB
     unsigned end_addr = sa + size;
     
     for (; sa < end_addr; sa += sector_size) {
@@ -1259,41 +1259,35 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, uin
         sram_oam[i] = oam[i];
     }
     
-    // 3. 先保存音频寄存器 (0x4000060-0x4000090) 到 spend_0x80+0x48（DMA寄存器后面）
-    volatile uint16_t *audio_reg = (volatile uint16_t*)0x04000060;
-    volatile uint16_t *spend_audio = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x48);
-    for (int i = 0; i < 24; i++) {  // 48字节 = 24个16位寄存器
-        spend_audio[i] = audio_reg[i];
-    }
-    
-    // 4. 用原始的sound寄存器值覆盖spend中的对应位置
-    // SOUNDCNT_L在0x04000080，相对于0x04000060的偏移是0x20，即16个16位寄存器
-    // SOUNDCNT_X在0x04000084，相对于0x04000060的偏移是0x24，即18个16位寄存器
-    spend_audio[16] = sound_regs[0];  // SOUNDCNT_L
-    spend_audio[18] = sound_regs[1];  // SOUNDCNT_X
-    
-    // 5. 复制spend_0x80的内容(128字节)到SRAM的0x8400偏移
+    // 3. 复制spend_0x80的内容(60字节)到SRAM的0x8400偏移
     volatile uint8_t *spend_src = (volatile uint8_t*)SPEND_0x80_ADDR;
     volatile uint8_t *sram_spend = sram + 0x8400;
-    for (uint32_t i = 0; i < 0x80; i++) {
+    for (uint32_t i = 0; i < 60; i++) {  // 只复制前60字节
         sram_spend[i] = spend_src[i];
     }
     
-    // 6. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
+    // 4. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
     volatile uint8_t *io_base = (volatile uint8_t*)0x04000000;
     volatile uint8_t *sram_io1 = sram + 0x9000;
     for (uint32_t i = 0; i < 0x60; i++) {
         sram_io1[i] = io_base[i];
     }
     
-    // 7. 复制音频寄存器数据(0x30字节)到SRAM的0x9060偏移
-    volatile uint8_t *spend_audio_bytes = (volatile uint8_t*)(SPEND_0x80_ADDR + 0x48);
+    // 5. 直接复制音频寄存器 (0x4000060-0x4000090) 到SRAM的0x9060偏移
+    volatile uint8_t *audio_reg = (volatile uint8_t*)0x04000060;
     volatile uint8_t *sram_audio = sram + 0x9060;
-    for (uint32_t i = 0; i < 0x30; i++) {
-        sram_audio[i] = spend_audio_bytes[i];
+    for (uint32_t i = 0; i < 0x30; i++) {  // 48字节
+        sram_audio[i] = audio_reg[i];
     }
     
-    // 8. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
+    // 6. 用原始的sound寄存器值覆盖SRAM中的对应位置
+    // SOUNDCNT_L在0x04000080，相对于0x04000060的偏移是0x20
+    // SOUNDCNT_X在0x04000084，相对于0x04000060的偏移是0x24
+    volatile uint16_t *sram_audio_16 = (volatile uint16_t*)(sram + 0x9060);
+    sram_audio_16[0x20/2] = sound_regs[0];  // SOUNDCNT_L
+    sram_audio_16[0x24/2] = sound_regs[1];  // SOUNDCNT_X
+    
+    // 7. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
     volatile uint8_t *io_base2 = (volatile uint8_t*)0x04000090;
     volatile uint8_t *sram_io2 = sram + 0x9090;
     for (uint32_t i = 0; i < 0x370; i++) {
