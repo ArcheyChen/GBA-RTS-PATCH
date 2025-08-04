@@ -228,7 +228,7 @@ typedef struct {
 // 前向声明  
 void patched_entrypoint(void);
 uint32_t init_before_game(void);
-void rts_save(void);
+void rts_save(uint16_t *sound_regs);
 int run_arm_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
 void keypad_process(void);
 
@@ -241,7 +241,7 @@ void write_sram_to_sector(int sector_num, int flash_type_index);
 void save_ewram_to_flash(int flash_type_index);
 void save_iwram_vram_back_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
-void save_misc_to_flash(int flash_type_index);
+void save_misc_to_flash(int flash_type_index, uint16_t *sound_regs);
 bool check_rts_save_flag(void);
 
 // 裸汇编入口函数 - 调用init_before_game然后跳转到原始入口点
@@ -292,9 +292,17 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
 /*此时临时缓冲区内容:（优化后的布局）
 
 0x00-0x03 (4字节): IRQ模式下的SPSR寄存器(r3)
-0x04-0x23 (32字节): IRQ模式下的r4-r11寄存器
+0x04-0x23 (32字节): IRQ模式下的r4-r11寄存器  
 0x24-0x27 (4字节): IRQ模式下的sp寄存器
-0x28-0x2B (4字节): IRQ模式下的lr寄存器*/
+0x28-0x2B (4字节): IRQ模式下的lr寄存器
+0x2C-0x2F (4字节): 空洞
+0x30-0x33 (4字节): 系统模式的SP
+0x34-0x37 (4字节): 系统模式的LR
+0x38-0x3F (8字节): 空洞
+0x40-0x47 (8字节): DMA控制寄存器(DMA0-3的CNT_H)
+0x48-0x77 (48字节): 音频寄存器(仅在save_misc_to_flash中临时保存)
+0x78-0x7F (8字节): 空洞
+*/
 __attribute__((target("arm"))) int detect_keys(void)
 {
     uint16_t keypad_value = *((volatile uint16_t*)0x04000130);
@@ -320,24 +328,17 @@ __attribute__((target("arm"))) void keypad_process(void)
         // 硬件寄存器基地址
         volatile uint16_t *hw_base = (volatile uint16_t*)0x04000000;
         
-        // 获取spend_0x80地址并设置当前位置
+        // 保存DMA控制寄存器到spend_0x80+0x40开始
         volatile uint16_t *spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x40);
-        
-        // 保存音频寄存器 (0x4000060-0x4000090) 到 spend_0x80+0x40
-        volatile uint16_t *audio_reg = &hw_base[0x0060/2];
-        for (int i = 0; i < 24; i++) {  // 48字节 = 24个16位寄存器
-            *spend_addr++ = *audio_reg++;
-        }
-        
-        // 保存DMA控制寄存器到spend_0x80+0x72开始
         *spend_addr++ = hw_base[0x00BA/2];  // DMA0CNT_H
         *spend_addr++ = hw_base[0x00C6/2];  // DMA1CNT_H
         *spend_addr++ = hw_base[0x00D2/2];  // DMA2CNT_H
         *spend_addr++ = hw_base[0x00DE/2];  // DMA3CNT_H
         
-        // 保存SOUNDCNT_L和SOUNDCNT_X到栈（与EZODE一致）
-        uint16_t sound_reg1 = hw_base[0x0080/2];  // SOUNDCNT_L
-        uint16_t sound_reg2 = hw_base[0x0084/2];  // SOUNDCNT_X
+        // 保存SOUNDCNT_L和SOUNDCNT_X到数组（与EZODE一致）
+        uint16_t sound_regs[2];
+        sound_regs[0] = hw_base[0x0080/2];  // SOUNDCNT_L
+        sound_regs[1] = hw_base[0x0084/2];  // SOUNDCNT_X
         
         // 保存并禁用IME（中断主使能）- 与EZODE一致
         uint16_t ime_value = hw_base[0x0208/2];  // 保存IME状态
@@ -352,20 +353,20 @@ __attribute__((target("arm"))) void keypad_process(void)
         
         // 调用存档或读档函数
         if(need_save)
-            rts_save();
+            rts_save(sound_regs);
         else
             load_from_flash();
             
-        // 恢复DMA状态（从spend_0x80+0x72读取）
-        spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x72);
+        // 恢复DMA状态（从spend_0x80+0x40读取）
+        spend_addr = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x40);
         hw_base[0x00BA/2] = *spend_addr++;  // DMA0CNT_H
         hw_base[0x00C6/2] = *spend_addr++;  // DMA1CNT_H
         hw_base[0x00D2/2] = *spend_addr++;  // DMA2CNT_H
         hw_base[0x00DE/2] = *spend_addr++;  // DMA3CNT_H
         
         // 恢复sound状态
-        hw_base[0x0084/2] = sound_reg2;
-        hw_base[0x0080/2] = sound_reg1;
+        hw_base[0x0084/2] = sound_regs[1];
+        hw_base[0x0080/2] = sound_regs[0];
         
         // 恢复IME（中断主使能）- 与EZODE一致
         hw_base[0x0208/2] = ime_value;
@@ -410,7 +411,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
 }
 
 
-  __attribute__((target("arm"))) void rts_save(void)
+  __attribute__((target("arm"))) void rts_save(uint16_t *sound_regs)
   {
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
@@ -468,7 +469,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
         save_iwram_vram_back_to_flash(flash_type_index);
         
         // 保存调色板、OAM、IO寄存器等到扇区6
-        save_misc_to_flash(flash_type_index);
+        save_misc_to_flash(flash_type_index, sound_regs);
         
         // 恢复SRAM为原状
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
@@ -1236,7 +1237,7 @@ __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_inde
 }
 
 // 保存VRAM后半部分、OAM、IO寄存器等到Flash扇区6
-__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index)
+__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, uint16_t *sound_regs)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
     
@@ -1258,37 +1259,48 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index)
         sram_oam[i] = oam[i];
     }
     
-    // 3. 系统模式的SP和LR已经在IRQ入口处保存了，这里不需要再保存
+    // 3. 先保存音频寄存器 (0x4000060-0x4000090) 到 spend_0x80+0x48（DMA寄存器后面）
+    volatile uint16_t *audio_reg = (volatile uint16_t*)0x04000060;
+    volatile uint16_t *spend_audio = (volatile uint16_t*)(SPEND_0x80_ADDR + 0x48);
+    for (int i = 0; i < 24; i++) {  // 48字节 = 24个16位寄存器
+        spend_audio[i] = audio_reg[i];
+    }
     
-    // 4. 复制spend_0x80的内容(128字节)到SRAM的0x8400偏移
+    // 4. 用原始的sound寄存器值覆盖spend中的对应位置
+    // SOUNDCNT_L在0x04000080，相对于0x04000060的偏移是0x20，即16个16位寄存器
+    // SOUNDCNT_X在0x04000084，相对于0x04000060的偏移是0x24，即18个16位寄存器
+    spend_audio[16] = sound_regs[0];  // SOUNDCNT_L
+    spend_audio[18] = sound_regs[1];  // SOUNDCNT_X
+    
+    // 5. 复制spend_0x80的内容(128字节)到SRAM的0x8400偏移
     volatile uint8_t *spend_src = (volatile uint8_t*)SPEND_0x80_ADDR;
     volatile uint8_t *sram_spend = sram + 0x8400;
     for (uint32_t i = 0; i < 0x80; i++) {
         sram_spend[i] = spend_src[i];
     }
     
-    // 5. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
+    // 6. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
     volatile uint8_t *io_base = (volatile uint8_t*)0x04000000;
     volatile uint8_t *sram_io1 = sram + 0x9000;
     for (uint32_t i = 0; i < 0x60; i++) {
         sram_io1[i] = io_base[i];
     }
     
-    // 6. 复制spend_0x80+0x40的内容(0x30字节)到SRAM的0x9060偏移
-    volatile uint8_t *spend_audio = (volatile uint8_t*)(SPEND_0x80_ADDR + 0x40);
+    // 7. 复制音频寄存器数据(0x30字节)到SRAM的0x9060偏移
+    volatile uint8_t *spend_audio_bytes = (volatile uint8_t*)(SPEND_0x80_ADDR + 0x48);
     volatile uint8_t *sram_audio = sram + 0x9060;
     for (uint32_t i = 0; i < 0x30; i++) {
-        sram_audio[i] = spend_audio[i];
+        sram_audio[i] = spend_audio_bytes[i];
     }
     
-    // 7. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
+    // 8. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
     volatile uint8_t *io_base2 = (volatile uint8_t*)0x04000090;
     volatile uint8_t *sram_io2 = sram + 0x9090;
     for (uint32_t i = 0; i < 0x370; i++) {
         sram_io2[i] = io_base2[i];
     }
     
-    // 8. 写入RTS标志字符串到SRAM的0xFFF0偏移
+    // 9. 写入RTS标志字符串到SRAM的0xFFF0偏移
     // 使用GET_REL_ADDR获取字符串地址
     uint32_t flag_addr;
     GET_REL_ADDR(rts_flag_string, flag_addr);
