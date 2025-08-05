@@ -191,8 +191,7 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 
 //默认临时存储地址 (EWRAM区域)
 //0203FFFF - 0203FE00 = 0x1FF, 512字节的空闲区域，这是认为，至少，EWRAM会有这么多的可用空间
-#define SPEND_0x80_ADDR 0x0203FE00
-//注：C语言必须用define的方式获取，不能用下面定义的，不然会炸，不知道为什么
+//注：现在spend_0x80地址通过函数参数传递，不再使用固定地址
 asm("spend_0x80:\n"
     ".text\n"
 	".word 0x0203FE00");
@@ -234,12 +233,12 @@ typedef struct {
 // 前向声明  
 void patched_entrypoint(void);
 uint32_t init_before_game(void);
-void rts_save(rts_temp_regs_t *rts_regs);
+void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr);
 int run_arm_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
-void keypad_process(void);
+void keypad_process(volatile uint8_t *spend_0x80_addr);
 
 // 前向声明函数
-void load_from_flash(void);
+void load_from_flash();
 void copy_flash_to_sram(uint32_t flash_addr, uint32_t size);
 void restore_sram_from_sector(int sector_num);
 void erase_all_sectors(int flash_type_index);
@@ -247,7 +246,7 @@ void write_sram_to_sector(int sector_num, int flash_type_index);
 void save_ewram_to_flash(int flash_type_index);
 void save_iwram_vram_back_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
-void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs);
+void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr);
 bool check_rts_save_flag(void);
 
 // 裸汇编入口函数 - 调用init_before_game然后跳转到原始入口点
@@ -292,6 +291,8 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "msr cpsr_cf, r0\n"              // 恢复IRQ模式
         "nop\n"
         "\n"
+        // 获取spend_0x80地址作为参数传递给keypad_process
+        "ldr r0, spend_0x80\n"           // r0 = spend_0x80地址作为第一个参数
         "b keypad_process\n"
     );
 }
@@ -318,7 +319,7 @@ __attribute__((target("arm"))) int detect_keys(void)
 }
 
 // C语言版本的按键中断处理程序  
-__attribute__((target("arm"))) void keypad_process(void)
+__attribute__((target("arm"))) void keypad_process(volatile uint8_t *spend_0x80_addr)
 {
     // 检查按键寄存器 (KEYINPUT: 0x04000130)
     volatile uint16_t *keypad_reg = (volatile uint16_t*)0x04000130;
@@ -353,7 +354,7 @@ __attribute__((target("arm"))) void keypad_process(void)
         
         // 调用存档或读档函数
         if(need_save)
-            rts_save(&rts_temp_regs);
+            rts_save(&rts_temp_regs, spend_0x80_addr);
         else
             load_from_flash();
             
@@ -410,7 +411,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
 }
 
 
-  __attribute__((target("arm"))) void rts_save(rts_temp_regs_t *rts_regs)
+  __attribute__((target("arm"))) void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr)
   {
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
@@ -468,7 +469,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
         save_iwram_vram_back_to_flash(flash_type_index);
         
         // 保存调色板、OAM、IO寄存器等到扇区6
-        save_misc_to_flash(flash_type_index, rts_regs);
+        save_misc_to_flash(flash_type_index, rts_regs, spend_0x80_addr);
         
         // 恢复SRAM为原状
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
@@ -500,7 +501,7 @@ __attribute__((target("arm"))) void copy_flash_to_sram(uint32_t flash_addr, uint
 }
 
 // 读档函数 - 直接从Flash中恢复到内存
-__attribute__((target("arm"))) void load_from_flash(void)
+__attribute__((target("arm"))) void load_from_flash()
 {
     // 先检查RTS存档标志
     if (!check_rts_save_flag()) {
@@ -1241,7 +1242,7 @@ __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_inde
 }
 
 // 保存VRAM后半部分、OAM、IO寄存器等到Flash扇区6
-__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs)
+__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
     
@@ -1264,10 +1265,9 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts
     }
     
     // 3. 复制spend_0x80的前64字节到SRAM的0x8400偏移，然后保存rts_temp_regs结构体
-    volatile uint8_t *spend_src = (volatile uint8_t*)SPEND_0x80_ADDR;
     volatile uint8_t *sram_spend = sram + 0x8400;
     for (uint32_t i = 0; i < 0x40; i++) {  // 只复制前64字节（0x40）
-        sram_spend[i] = spend_src[i];
+        sram_spend[i] = spend_0x80_addr[i];
     }
     
     // 在spend_0x80+0x40位置直接保存rts_temp_regs结构体
