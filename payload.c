@@ -191,10 +191,7 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 
 //默认临时存储地址 (EWRAM区域)
 //0203FFFF - 0203FE00 = 0x1FF, 512字节的空闲区域，这是认为，至少，EWRAM会有这么多的可用空间
-//注：现在spend_0x80地址通过函数参数传递，不再使用固定地址
-asm("spend_0x80:\n"
-    ".text\n"
-	".word 0x0203FE00");
+//注：现在spend_0x80地址通过函数参数传递，改为栈分配，不再使用固定地址
 
 #define AGB_ROM  ((unsigned char*)0x8000000)
 #define AGB_SRAM ((volatile unsigned char*)0xE000000)
@@ -274,26 +271,36 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n" // 跳转到原始IRQ处理程序
 
         "call_handler:\n"
+        // 在IRQ栈上分配52字节空间作为临时缓冲区
+        "sub sp, sp, #52\n"              // 分配栈空间
+        "mov r12, sp\n"                  // r12 = 缓冲区地址
+        
+        // 保存LR，因为BL会破坏它
+        "push {lr}\n"
+        
         // 匹配了其中一个热键，保存寄存器并调用处理函数
         "mrs r3, SPSR\n"                 // 先读取SPSR到r3
-        "ldr r12, spend_0x80\n"
-        "stmia r12!, {r3-r11,sp,lr}\n"   // 一次性保存r3(SPSR)到lr
+        "stmia r12!, {r3-r11,sp,lr}\n"   // 一次性保存r3(SPSR)到lr到栈缓冲区
         "\n"
-        // 保存系统模式的SP和LR到spend_0x80+0x30
+        // 保存系统模式的SP和LR到栈缓冲区+0x2C
         "mrs r0, CPSR\n"                 // 备份当前CPSR
         "mov r1, #0xDF\n"                // 系统模式
         "msr cpsr_cf, r1\n"
         "nop\n"
         "mov r2, sp\n"                   // 获取系统模式SP
-        "ldr r3, spend_0x80\n"           // 获取spend_0x80地址
-        "add r3, r3, #0x2C\n"            // 偏移到+0x2C
+        "add r3, sp, #0x2C\n"            // r3 = 栈缓冲区地址 + 0x2C偏移
         "stmia r3!, {r2, lr}\n"          // 保存SP和LR
         "msr cpsr_cf, r0\n"              // 恢复IRQ模式
         "nop\n"
         "\n"
-        // 获取spend_0x80地址作为参数传递给keypad_process
-        "ldr r0, spend_0x80\n"           // r0 = spend_0x80地址作为第一个参数
-        "b keypad_process\n"
+        // 调用keypad_process
+        "mov r0, sp\n"                   // r0 = 栈缓冲区地址作为第一个参数
+        "bl keypad_process\n"            // keypad_process会处理原始IRQ调用
+        "\n"
+        // keypad_process返回后恢复栈
+        "pop {lr}\n"                     // 恢复LR
+        "add sp, sp, #52\n"              // 恢复栈指针
+        "mov pc, lr\n"                   // 返回到BIOS
     );
 }
 /*此时临时缓冲区内容:（优化后的布局，只需60字节）
