@@ -191,7 +191,7 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 
 //默认临时存储地址 (EWRAM区域)
 //0203FFFF - 0203FE00 = 0x1FF, 512字节的空闲区域，这是认为，至少，EWRAM会有这么多的可用空间
-//注：现在spend_0x80地址通过函数参数传递，改为栈分配，不再使用固定地址
+//注：现在cpu_regs地址通过函数参数传递，改为栈分配，不再使用固定地址
 
 #define AGB_ROM  ((unsigned char*)0x8000000)
 #define AGB_SRAM ((volatile unsigned char*)0xE000000)
@@ -230,9 +230,9 @@ typedef struct {
 // 前向声明  
 void patched_entrypoint(void);
 uint32_t init_before_game(void);
-void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr);
+void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr);
 int run_arm_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
-void keypad_process(volatile uint8_t *spend_0x80_addr);
+void keypad_process(volatile uint8_t *cpu_regs_addr);
 
 // 前向声明函数
 void load_from_flash();
@@ -243,7 +243,7 @@ void write_sram_to_sector(int sector_num, int flash_type_index);
 void save_ewram_to_flash(int flash_type_index);
 void save_iwram_vram_back_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
-void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr);
+void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr);
 bool check_rts_save_flag(void);
 
 // 裸汇编入口函数 - 调用init_before_game然后跳转到原始入口点
@@ -261,8 +261,6 @@ __attribute__((naked, target("arm"))) void patched_entrypoint(void)
 __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
 {
     asm volatile(
-
-        //不知道为什么，有上面的判断反而会卡。不如就直接无脑存
         "push {r0,lr}\n"
         "bl detect_keys\n"        // 检测按键
         "cmp r0, #1\n"
@@ -295,7 +293,7 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         
         // 保存LR，因为BL调用会破坏它
         "push {lr}\n"
-        
+
         // 第五步：再次切换到系统模式保存系统模式的SP和LR
         "mov r3, #0xDF\n"                // 系统模式
         "msr cpsr_cf, r3\n"
@@ -322,8 +320,7 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "msr cpsr_cf, r1\n"              // 直接恢复原CPSR (IRQ模式)
         "nop\n"
         
-        "pop {lr}\n"                     // 恢复LR
-        "mov pc, lr\n"                   // 返回到BIOS
+        "pop {pc}\n"                     // 返回到BIOS
     );
 }
 /*此时临时缓冲区内容:（系统栈分配，52字节）
@@ -350,7 +347,7 @@ __attribute__((target("arm"))) int detect_keys(void)
 }
 
 // C语言版本的按键中断处理程序  
-__attribute__((target("arm"))) void keypad_process(volatile uint8_t *spend_0x80_addr)
+__attribute__((target("arm"))) void keypad_process(volatile uint8_t *cpu_regs_addr)
 {
     // 检查按键寄存器 (KEYINPUT: 0x04000130)
     volatile uint16_t *keypad_reg = (volatile uint16_t*)0x04000130;
@@ -385,7 +382,7 @@ __attribute__((target("arm"))) void keypad_process(volatile uint8_t *spend_0x80_
         
         // 调用存档或读档函数
         if(need_save)
-            rts_save(&rts_temp_regs, spend_0x80_addr);
+            rts_save(&rts_temp_regs, cpu_regs_addr);
         else
             load_from_flash();
             
@@ -442,7 +439,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
 }
 
 
-  __attribute__((target("arm"))) void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr)
+  __attribute__((target("arm"))) void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr)
   {
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
@@ -500,7 +497,7 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
         save_iwram_vram_back_to_flash(flash_type_index);
         
         // 保存调色板、OAM、IO寄存器等到扇区6
-        save_misc_to_flash(flash_type_index, rts_regs, spend_0x80_addr);
+        save_misc_to_flash(flash_type_index, rts_regs, cpu_regs_addr);
         
         // 恢复SRAM为原状
         restore_sram_from_sector(SRAM_SAVE_SECTOR);
@@ -595,7 +592,7 @@ __attribute__((target("arm"))) void load_from_flash()
     }
     
     ////////////////////////////////////////////////////////////////////////////////////////
-    // 4. 零散数据恢复 - 从扇区6恢复系统模式SP/LR、IO寄存器、spend_0x80等
+    // 4. 零散数据恢复 - 从扇区6恢复系统模式SP/LR、IO寄存器、cpu_regs等
     ////////////////////////////////////////////////////////////////////////////////////////
     
     // 计算Flash扇区6中各数据的基地址
@@ -657,12 +654,12 @@ __attribute__((target("arm"))) void load_from_flash()
         // 恢复IWRAM和调色板 - 从扇区4
     // 恢复系统模式SP和LR寄存器 - 直接从Flash读取
     // 这需要切换到系统模式，恢复寄存器，然后切换回来
-    volatile uint8_t *spend_0x80_on_flash = flash_sector6_u8 + 0x8400;
+    volatile uint8_t *cpu_regs_on_flash = flash_sector6_u8 + 0x8400;
     asm volatile(
         "mrs r0, cpsr\n"                // 保存当前CPSR
         
         // 直接从Flash读取SPSR
-        "ldr r7, %[spend_0x80]\n"    // r7 = spend_0x80在flash上的地址
+        "ldr r7, %[cpu_regs]\n"    // r7 = cpu_regs在flash上的地址
         "ldr r2, [r7]\n"                // 直接从Flash读取SPSR
         "msr spsr_cxsf, r2\n"           // 恢复SPSR irq状态
 
@@ -676,7 +673,7 @@ __attribute__((target("arm"))) void load_from_flash()
         "msr cpsr_cf, r0\n"             // 恢复CPSR,即，切换回到IRQ模式
         "nop\n"
         :
-        : [spend_0x80] "m" (spend_0x80_on_flash)
+        : [cpu_regs] "m" (cpu_regs_on_flash)
         : "r0", "r1", "r2", "r7", "memory"
     );
     
@@ -702,7 +699,7 @@ __attribute__((target("arm"))) void load_from_flash()
     asm volatile(
         
         // 恢复IWRAM - 纯寄存器实现
-        "ldr r12, %[spend_0x80]\n"
+        "ldr r12, %[cpu_regs]\n"
         "ldr r2, %[sector_addr]\n"           // r2 = flash基地址
         "mov r3, #0x03000000\n"             // r3 = IWRAM地址
         "mov r4, #0x8000\n"                 // r4 = 32KB计数器
@@ -719,7 +716,7 @@ __attribute__((target("arm"))) void load_from_flash()
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
         :
         : [sector_addr] "m" (flash_sector4),
-          [spend_0x80] "m" (spend_0x80_on_flash)
+          [cpu_regs] "m" (cpu_regs_on_flash)
         : "memory"
     );
 }
@@ -1273,14 +1270,9 @@ __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_inde
 }
 
 // 保存VRAM后半部分、OAM、IO寄存器等到Flash扇区6
-__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *spend_0x80_addr)
+__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
-    
-    // 先清空SRAM
-    for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
-        sram[i] = 0;
-    }
     
     // 1. 复制调色板 (1KB) 到SRAM的0x0000偏移
     volatile uint8_t *palette = (volatile uint8_t*)0x05000000;
@@ -1295,13 +1287,13 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts
         sram_oam[i] = oam[i];
     }
     
-    // 3. 复制spend_0x80的前64字节到SRAM的0x8400偏移，然后保存rts_temp_regs结构体
+    // 3. 复制cpu_regs到SRAM的0x8400偏移，然后保存rts_temp_regs结构体
     volatile uint8_t *sram_spend = sram + 0x8400;
-    for (uint32_t i = 0; i < 0x40; i++) {  // 只复制前64字节（0x40）
-        sram_spend[i] = spend_0x80_addr[i];
+    for (uint32_t i = 0; i < 52; i++) {  // 大小是52字节
+        sram_spend[i] = cpu_regs_addr[i];
     }
     
-    // 在spend_0x80+0x40位置直接保存rts_temp_regs结构体
+    // 在cpu_regs+0x40位置直接保存rts_temp_regs结构体
     volatile uint8_t *sram_rts_regs = (volatile uint8_t*)(sram_spend + 0x40);
     uint8_t *rts_regs_src = (uint8_t*)rts_regs;
     for (uint32_t i = 0; i < sizeof(rts_temp_regs_t); i++) {
