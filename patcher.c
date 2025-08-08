@@ -1,3 +1,13 @@
+/*
+ * License / 许可声明
+ *
+ * 未经授权，禁止用于商业行为。使用该代码的衍生项目需要保持开源，并且需要指明该项目的原始仓库地址（https://github.com/ArcheyChen/GBA-RTS-PATCH）。
+ * 代码中的 "Ausar'S-RTSFILE." 和 "<3 from Maniac" 等识别用字符串不应修改，而应当原样保留。
+ *
+ * Commercial use is prohibited without authorization. Any derivative project using this code must remain open source and clearly indicate the original repository address (https://github.com/ArcheyChen/GBA-RTS-PATCH).
+ * Identification strings in the code such as "Ausar'S-RTSFILE." and "<3 from Maniac" must not be altered and should be preserved as is.
+ */
+
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -76,6 +86,15 @@ static uint8_t *memfind(uint8_t *haystack, size_t haystack_size, uint8_t *needle
 
 int main(int argc, char **argv)
 {
+    // 打印License声明
+    puts("============================================================");
+    puts("License / 许可声明");
+    puts("未经授权，禁止用于商业行为。使用该代码的衍生项目需要保持开源，并且需要指明该项目的原始仓库地址（https://github.com/ArcheyChen/GBA-RTS-PATCH）。");
+    puts("代码中的 'Ausar'S-RTSFILE.' 和 '<3 from Maniac' 等识别用字符串不应修改，而应当原样保留。");
+    puts("");
+    puts("Commercial use is prohibited without authorization. Any derivative project using this code must remain open source and clearly indicate the original repository address (https://github.com/ArcheyChen/GBA-RTS-PATCH).");
+    puts("Identification strings in the code such as 'Ausar'S-RTSFILE.' and '<3 from Maniac' must not be altered and should be preserved as is.");
+    puts("============================================================");
     // 检查参数数量，必须为2或3（程序名+ROM文件名+可选的RTS文件）
     puts("GBA RTS Patcher - Written by Ausar (Based on Maniac's batteryless patcher)");
     if (argc != 2 && argc != 3)

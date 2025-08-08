@@ -1,6 +1,13 @@
+# License / 许可声明
+
+未经授权，禁止用于商业行为。使用该代码的衍生项目需要保持开源，并且需要指明该项目的原始仓库地址（https://github.com/ArcheyChen/GBA-RTS-PATCH）。代码中的 "Ausar'S-RTSFILE." 和 "<3 from Maniac" 等识别用字符串不应修改，而应当原样保留。
+
+Commercial use is prohibited without authorization. Any derivative project using this code must remain open source and clearly indicate the original repository address (https://github.com/ArcheyChen/GBA-RTS-PATCH). Identification strings in the code such as "Ausar'S-RTSFILE." and "<3 from Maniac" must not be altered and should be preserved as is.
+
 # GBA RTS Patcher(**not working right now**)
 
-This project provides automatic Real-Time Save (RTS) functionality for GBA games running on batteryless flash carts. It allows players to save and restore game state at any time using button combinations.
+This project provides automatic Real-Time Save (RTS) functionality for GBA games running on SRAM flash carts. It allows players to save and restore game state at any time using button combinations.
+
 
 
 
@@ -18,26 +25,13 @@ The patcher injects custom code into your GBA ROM that:
 2. Saves complete game state (CPU registers, RAM, VRAM, etc.) to flash storage
 3. Restores game state seamlessly when requested
 
-## Technical Documentation
-
-For detailed technical information, please refer to the following documents (written in Chinese, use Google Translate for English):
-
-- **[PATCH_MECHANISM.md](PATCH_MECHANISM.md)** - Explains how the patch injection works, position-independent code implementation, and flash operation techniques
-- **[SAVE_RESTORE_MECHANISM.md](SAVE_RESTORE_MECHANISM.md)** - Details the save data layout, sector allocation, and save/restore process
-- **[CURRENT_ISSUES.md](CURRENT_ISSUES.md)** - Documents current technical challenges and debugging efforts
-
 ## Requirements
 
-The game must be SRAM patched before using this program. GBATA or [Flash1M_Repro_SRAM_patcher](https://github.com/bbsan2k/Flash1M_Repro_SRAM_Patcher) can be used depending on the game.
-
+The cart must have at least 64KB of SRAM. The 32KB of SRAM carts don't have enought space to save.(but this can be fix, I just don't have time to do so)
 ## Usage
 
 ```bash
-# Basic usage
-./patcher input.gba output.gba
-
-# With specific flash type (0=auto, 1-4=specific type)
-./patcher input.gba output.gba [flash_type] [save_size]
+./patcher input.gba
 ```
 
 For GUI users, drag the ROM onto the .exe in the file browser.
@@ -50,31 +44,20 @@ Requirements:
 
 Build command:
 ```bash
-$DEVKITARM/bin/arm-none-eabi-gcc -mcpu=arm7tdmi -nostartfiles -nodefaultlibs -mthumb -fPIE -Os -fno-toplevel-reorder payload.c -T payload.ld -o payload.elf
-$DEVKITARM/bin/arm-none-eabi-objcopy -O binary payload.elf payload.bin
-xxd -i payload.bin > payload_bin.c
-gcc -g patcher.c payload_bin.c -o patcher
+./build.sh
 ```
 
 ## Contributing
 
-This project is actively seeking help with:
-- Resolving CPU mode switching issues when calling C functions
-- Optimizing flash programming routines
-- Improving compatibility with different games
-- Adding support for more flash chip types
-
-Please see [CURRENT_ISSUES.md](CURRENT_ISSUES.md) for specific technical challenges that need solving.
+Currently, the Flash programming part isn't optimized, and only supports 4 types of Flash, I hope someone can optimize this part.
 
 ## Credits
 RTS & C language Porting: [Ausar](https://github.com/ArcheyChen)
 
 Base on project: [gba auto batteryless patcher](https://github.com/metroid-maniac/gba-auto-batteryless-patcher) written by [metroid-maniac](https://github.com/metroid-maniac/)
 
-RTS algorithm: [EzFlash's EZODE](https://github.com/ez-flash/omega-de-kernel/blob/main/source/gba_rts_patch.s)
-
 Thanks to
-- [ez-flash](https://github.com/ez-flash) for [EZ Flash Omega kernel](https://github.com/ez-flash/omega-kernel) containing examples for hooking the IRQ handler
+- [ez-flash](https://github.com/ez-flash) for [EZ Flash Omega kernel](https://github.com/ez-flash/omega-kernel) containing examples for hooking the IRQ handler and RTS patch
 - [Fexean](https://gitlab.com/Fexean) for [GBABF](https://gitlab.com/Fexean/gbabf)
 - [vrodin](https://github.com/vrodin) for [Burn2Slot](https://github.com/vrodin/Burn2Slot)
 - [Lesserkuma](https://github.com/lesserkuma) for [FlashGBX](https://github.com/lesserkuma/FlashGBX) and batteryless versions of [Goomba Color](https://github.com/lesserkuma/goombacolor) and [PocketNES](https://github.com/lesserkuma/PocketNES)
