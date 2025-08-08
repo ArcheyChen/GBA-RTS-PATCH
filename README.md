@@ -9,7 +9,7 @@ This code is provided "as is", without warranty of any kind, express or implied,
 
 Commercial use is prohibited without authorization. Any derivative project using this code must remain open source and clearly indicate the original repository address (https://github.com/ArcheyChen/GBA-RTS-PATCH). Identification strings in the code such as "Ausar'S-RTSFILE." and "<3 from Maniac" must not be altered and should be preserved as is.
 
-# GBA RTS Patcher(**not working right now**)
+# GBA RTS Patcher(**Kind of working right now**)
 
 This project provides automatic Real-Time Save (RTS) functionality for GBA games running on SRAM flash carts. It allows players to save and restore game state at any time using button combinations.
 
