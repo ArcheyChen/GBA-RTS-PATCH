@@ -41,6 +41,16 @@ uint8_t rom[0x02000000];
 char signature[] = "<3 from Maniac";
 #define RTS_SIZE (448 * 1024)  // 448KB
 
+// 从gba-auto-batteryless-patcher移植的存档函数签名
+static unsigned char write_sram_signature[] = { 0x30, 0xB5, 0x05, 0x1C, 0x0C, 0x1C, 0x13, 0x1C, 0x0B, 0x4A, 0x10, 0x88, 0x0B, 0x49, 0x08, 0x40};
+static unsigned char write_sram2_signature[] = { 0x80, 0xb5, 0x83, 0xb0, 0x6f, 0x46, 0x38, 0x60, 0x79, 0x60, 0xba, 0x60, 0x09, 0x48, 0x09, 0x49 };
+static unsigned char write_sram_ram_signature[] = { 0x04, 0xC0, 0x90, 0xE4, 0x01, 0xC0, 0xC1, 0xE4, 0x2C, 0xC4, 0xA0, 0xE1, 0x01, 0xC0, 0xC1, 0xE4 };
+static unsigned char write_eeprom_signature[] = { 0x70, 0xB5, 0x00, 0x04, 0x0A, 0x1C, 0x40, 0x0B, 0xE0, 0x21, 0x09, 0x05, 0x41, 0x18, 0x07, 0x31, 0x00, 0x23, 0x10, 0x78};
+static unsigned char write_flash_signature[] = { 0x70, 0xB5, 0x00, 0x03, 0x0A, 0x1C, 0xE0, 0x21, 0x09, 0x05, 0x41, 0x18, 0x01, 0x23, 0x1B, 0x03};
+static unsigned char write_flash2_signature[] = { 0x7C, 0xB5, 0x90, 0xB0, 0x00, 0x03, 0x0A, 0x1C, 0xE0, 0x21, 0x09, 0x05, 0x09, 0x18, 0x01, 0x23};
+static unsigned char write_flash3_signature[] = { 0xF0, 0xB5, 0x90, 0xB0, 0x0F, 0x1C, 0x00, 0x04, 0x04, 0x0C, 0x03, 0x48, 0x00, 0x68, 0x40, 0x89 };
+static unsigned char write_eepromv111_signature[] = { 0x0A, 0x88, 0x80, 0x21, 0x09, 0x06, 0x0A, 0x43, 0x02, 0x60, 0x07, 0x48, 0x00, 0x47, 0x00, 0x00 };
+
 // 跨平台的"按任意键继续"函数
 static void press_any_key(void)
 {
@@ -189,9 +199,92 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    // 存档大小自动检测 - 扫描ROM寻找存档函数签名
+    uint32_t detected_save_size = 0x20000; // 默认128KB
+    int found_save_function = 0;
+    
+    printf("Scanning ROM for save function signatures...\n");
+    
+    for (uint8_t *scan_ptr = rom; scan_ptr < rom + romsize - 64; scan_ptr += 2)
+    {
+        // 检测SRAM写函数
+        if (!memcmp(scan_ptr, write_sram_signature, sizeof write_sram_signature) ||
+            !memcmp(scan_ptr, write_sram2_signature, sizeof write_sram2_signature) ||
+            !memcmp(scan_ptr, write_sram_ram_signature, sizeof write_sram_ram_signature))
+        {
+            detected_save_size = 0x8000; // 32KB SRAM
+            found_save_function = 1;
+            printf("SRAM save function detected at offset %lx - Save size: 32KB\n", scan_ptr - rom);
+            break;
+        }
+        // 检测EEPROM写函数
+        else if (!memcmp(scan_ptr, write_eeprom_signature, sizeof write_eeprom_signature) ||
+                 !memcmp(scan_ptr, write_eepromv111_signature, sizeof write_eepromv111_signature))
+        {
+            detected_save_size = 0x2000; // 8KB EEPROM (64kbit)
+            found_save_function = 1;
+            printf("EEPROM save function detected at offset %lx - Save size: 8KB\n", scan_ptr - rom);
+            break;
+        }
+        // 检测Flash写函数
+        else if (!memcmp(scan_ptr, write_flash_signature, sizeof write_flash_signature) ||
+                 !memcmp(scan_ptr, write_flash2_signature, sizeof write_flash2_signature))
+        {
+            detected_save_size = 0x10000; // 64KB Flash
+            found_save_function = 1;
+            printf("Flash (64KB) save function detected at offset %lx - Save size: 64KB\n", scan_ptr - rom);
+            break;
+        }
+        // 检测Flash 128KB写函数
+        else if (!memcmp(scan_ptr, write_flash3_signature, sizeof write_flash3_signature))
+        {
+            detected_save_size = 0x20000; // 128KB Flash
+            found_save_function = 1;
+            printf("Flash (128KB) save function detected at offset %lx - Save size: 128KB\n", scan_ptr - rom);
+            break;
+        }
+    }
+    
+    if (!found_save_function)
+    {
+        printf("No save function signatures found. Using default size: 128KB\n");
+    }
+
+    
+    // 获取用户输入的write buffer大小
+    puts("Input write buffer size (0-4095, 0 for default):");
+    int wbuf = 0;
+    scanf("%d", &wbuf);
+    if (wbuf < 0 || wbuf > 0xFFF)
+    {
+        puts("Invalid write buffer size, defaulting to 0");
+        wbuf = 0;
+    }
+
+
+    printf("Final save configuration:\n");
+    printf("  Save size: %u KB (0x%X bytes)\n", detected_save_size / 1024, detected_save_size);
+    printf("  Write buffer: %d bytes\n", wbuf);
+
+    // 获取sector size
+    puts("Input sector size (0x10000-0x40000, 0x10000 for default):");
+    int sector_size = 0x10000;
+    scanf("%x", &sector_size);
+    if (sector_size < 0x10000 || sector_size > 0x40000)
+    {
+        puts("Invalid sector size, defaulting to 0x10000");
+        sector_size = 0x10000;
+    }
+
     // 查找插入payload的位置：要求在某个256KB扇区前有一段全0或全0xFF的空间
-    // 需要预留512KB空间供后续扩展使用
-    const int reserved_space = 0x80000; // 512KB
+    // 需要预留448KB+save_size空间供后续扩展使用
+    int reserved_space = 0x70000; // 448KB
+    reserved_space += detected_save_size;
+    if (reserved_space % sector_size) {
+        reserved_space -= reserved_space % sector_size;
+        reserved_space += sector_size;
+        printf("padding reserved space to 0x%x\n", reserved_space);
+    }
     int payload_base;
     for (payload_base = romsize - reserved_space - payload_bin_len; payload_base >= 0; payload_base -= 0x40000)
     {
@@ -237,20 +330,16 @@ int main(int argc, char **argv)
     
     // 拷贝payload_bin到ROM指定位置
     memcpy(rom + payload_base, payload_bin, payload_bin_len);
-
-    // 设置payload中的save_size字段（见payload.c头部，决定SRAM保存区大小）
-    // payload.c: __attribute__((section(".text"))) const uint32_t save_size = 0x20000;
-    // 注意：虽然预留了512KB空间，但实际SRAM拷贝仍然只使用64KB
     struct PayloadHeader *header = (struct PayloadHeader*)&rom[payload_base];
-    header->save_size = 64*1024;
-    //TODO:每个游戏大小都应该不一样的。现在先写死了64KB（512Kb）
-    
+    // 设置payload中的save_size字段：高20位=存档大小，低12位=write buffer大小
+    header->save_size = (reserved_space & 0xFFFFFF000) | (wbuf & 0xFFF);
+
+    printf("  Combined save_size field: 0x%08X\n", header->save_size);
     // 计算并输出SRAM保存空间的基址（在payload之后）
     uint32_t sram_save_base = payload_base + payload_bin_len;
     printf("SRAM save space offset: 0x%X\n", sram_save_base);
     printf("SRAM save space ROM address: 0x%08X\n", 0x08000000 + sram_save_base);
     printf("Reserved space size: %u KB (0x%X bytes)\n", reserved_space / 1024, reserved_space);
-    printf("Actual SRAM copy size: 64 KB (0x10000 bytes)\n");
     
     // 处理可选的RTS文件
     if (argc == 3)
@@ -296,7 +385,7 @@ int main(int argc, char **argv)
         fclose(rtsfile);
         
         printf("RTS file embedded successfully at offset 0x%X\n", sram_save_base);
-        printf("RTS covers sectors 0-6 (448KB) of the 512KB save space\n");
+        printf("RTS covers sectors 0-6 (448KB) after payload\n");
     }
 
     // 修改ROM入口点，使其跳转到payload中的patched_entrypoint
@@ -324,12 +413,10 @@ int main(int argc, char **argv)
     // 修改ROM头部的入口跳转指令，使其跳转到payload的patched_entrypoint
     ((uint32_t*)rom)[0] = 0xea000000 | (new_entrypoint_address - 0x08000008) >> 2;
 
-    // 写入新文件名，后缀为_keypad.gba
-    char *suffix = "_keypad.gba";
-    size_t suffix_length = strlen(suffix);
+    // 写入新文件名，包含write buffer大小信息
+    argv[1][strlen(argv[1]) - 4] = '\0'; // 移除.gba扩展名
     char new_filename[FILENAME_MAX];
-    strncpy(new_filename, argv[1], FILENAME_MAX);
-    strncpy(new_filename + romfilename_len - 4, suffix, strlen(suffix));
+    sprintf(new_filename, "%s_rts_keypad_wb%d.gba", argv[1], wbuf);
 
     // 写入补丁后的ROM到新文件
     if (!(outfile = fopen(new_filename, "wb")))

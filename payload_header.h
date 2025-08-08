@@ -9,8 +9,10 @@
 // 使用packed属性确保紧密打包，避免任何对齐问题
 struct __attribute__((packed)) PayloadHeader {
     uint32_t original_entrypoint;      // 游戏原始入口点地址 (默认: 0x080000c0)
-    uint32_t save_size;                // 存档大小 (默认: 0x20000 = 128KB)
-                                       // 可被patcher覆盖为实际值（如64KB）
+    uint32_t ctrl_flag;                // 控制标志
+    uint32_t save_size;                // 存档大小 + 写缓冲区大小
+                                       // 高20位：实际存档大小 (SRAM=0x8000, EEPROM=0x2000, Flash64=0x10000, Flash128=0x20000)
+                                       // 低12位：写缓冲区大小 (0-4095字节)
     uint32_t patched_entrypoint_addr;  // 补丁入口点函数地址
 };
 
