@@ -207,14 +207,15 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 
 #define _FLASH_WRITE(pa, pd) { *(((unsigned short *)AGB_ROM)+((pa)/2)) = pd; __asm("nop"); }
 
-// 扇区定义 - 512KB分为8个64KB的扇区
-#define SECTOR_SIZE 0x10000    // 64KB per sector
-#define TOTAL_SECTORS 8        // 8 sectors total (512KB / 64KB)
-#define SRAM_SAVE_SECTOR 7     // 默认使用扇区7保存SRAM
-#define EWRAM_START_SECTOR 0   // EWRAM从扇区0开始，占用0-3
-#define VRAM_FRONT_SECTOR 4    // VRAM前64KB保存在扇区4
-#define IWRAM_PALETTE_SECTOR 5 // IWRAM和调色板保存在扇区5
-#define VRAM_BACK_MISC_SECTOR 6 // VRAM后32KB、OAM、IO寄存器等保存在扇区6
+// 扇区定义 - 512KB SRAM分为8个64KB的Bank
+// Bank 0: 原始游戏SRAM（不动）
+// Bank 1-7: RTS数据
+#define SECTOR_SIZE 0x10000    // 64KB per bank
+#define TOTAL_SECTORS 8        // 8 banks total (512KB / 64KB)
+#define EWRAM_START_SECTOR 1   // EWRAM从Bank 1开始，占用1-4
+#define VRAM_FRONT_SECTOR 5    // VRAM前64KB保存在Bank 5
+#define IWRAM_PALETTE_SECTOR 6 // IWRAM和调色板保存在Bank 6
+#define VRAM_BACK_MISC_SECTOR 7 // VRAM后32KB、OAM、IO寄存器等保存在Bank 7
 
 // 定义获取相对地址的宏
 #define GET_REL_ADDR(symbol, var) \
@@ -449,66 +450,28 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
   {
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
-    
-    // 用C代码获取地址和值，避免GOT依赖
-    uint32_t flash_sector_addr;
-    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
-    flash_sector_addr -= 0x08000000;  // 转换为flash内偏移
 
     struct PayloadHeader *header;
     GET_REL_ADDR(payload_header, header);
-    
-    // 第一部分：try_flash循环检测（使用结构体）
-    int flash_type_index = -1;
-    int identify_result = 0;
-    
-    flash_functions_t *flash_funcs;
-    GET_REL_ADDR(flash_fn_table, flash_funcs);
-    
-    for (int i = 0; ; i++) {
-        // 检查是否到达表尾
-        if (flash_funcs[i].identify_start == 0) {
-            identify_result = 0;
-            break;
-        }
-        
-        // 调用identify函数
-        uint32_t identify_start = flash_funcs[i].identify_start + (uint32_t)header;
-        uint32_t identify_end = flash_funcs[i].identify_end + (uint32_t)header;
-        identify_result = run_arm_from_ram(0, 0, identify_start, identify_end);
-        
-        if (identify_result != 0) {
-            // 找到匹配的flash，记录索引
-            flash_type_index = i;
-            break;
-        }
-        // 如果没找到，继续下一个条目（for循环自动递增i）
-    }
-    
-    // 如果找到匹配的flash，执行擦除和写入
-    if (identify_result != 0 && flash_type_index >= 0) {
-        // 先擦除整个448KB+rts_size
-        erase_all_sectors(flash_type_index, header->rts_size);
-        
-        // 保存原始SRAM到扇区7(-8)
-        write_sram_to_sector(SRAM_SAVE_SECTOR, flash_type_index, header->save_size);
-        
-        // 保存EWRAM到扇区0-3
-        save_ewram_to_flash(flash_type_index);
 
-        // 保存VRAM前64KB到扇区4
-        save_vram_front_to_flash(flash_type_index);
+    // 改为使用SRAM Bank切换保存数据
+    // Bank 0保持不动（原始游戏SRAM）
 
-        // 保存IWRAM和VRAM后半部分到扇区5
-        save_iwram_vram_back_to_flash(flash_type_index);
-        
-        // 保存调色板、OAM、IO寄存器等到扇区6
-        save_misc_to_flash(flash_type_index, rts_regs, cpu_regs_addr);
-        
-        // 恢复SRAM为原状
-        restore_sram_from_sector(SRAM_SAVE_SECTOR, header->save_size);
-    }
-    
+    // 保存EWRAM到Bank 1-4
+    save_ewram_to_flash(0);  // flash_type_index参数现在无用，传0
+
+    // 保存VRAM前64KB到Bank 5
+    save_vram_front_to_flash(0);
+
+    // 保存IWRAM和VRAM后半部分到Bank 6
+    save_iwram_vram_back_to_flash(0);
+
+    // 保存调色板、OAM、IO寄存器等到Bank 7
+    save_misc_to_flash(0, rts_regs, cpu_regs_addr);
+
+    // 确保恢复到Bank 0，让游戏能正常访问SRAM
+    SRAM_BANK_SEL = 0;
+
     // 禁用绿色交换
     *green_swap_reg = 0;
   }
@@ -546,71 +509,84 @@ __attribute__((target("arm"))) void load_from_flash()
         // 标志检查失败，直接返回，不启用绿色交换
         return;
     }
-    
+
     // 启用绿色交换 (GREEN_SWAP: 0x04000002)
     volatile uint16_t *green_swap_reg = (volatile uint16_t*)0x04000002;
     *green_swap_reg = 1;
-    
-    // 获取Flash基地址
-    uint32_t flash_base_addr;
-    GET_REL_ADDR(flash_save_sector, flash_base_addr);
-    
-    // 2. 大块内存恢复 - 使用u32拷贝（参考EZODE的ReadSram）
-    // 恢复EWRAM (256KB) - 从扇区0-3
+
+    volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
+
+    // 2. 大块内存恢复 - 使用SRAM Bank切换
+    // 恢复EWRAM (256KB) - 从Bank 1-4
+    // EWRAM支持32位访问，可以优化性能
     volatile uint32_t *ewram = (volatile uint32_t*)0x02000000;
-    for (int sector = 0; sector < 4; sector++) {
-        volatile uint32_t *flash_src = (volatile uint32_t*)(flash_base_addr + (EWRAM_START_SECTOR + sector) * SECTOR_SIZE);
-        int word_offset = sector * (SECTOR_SIZE / 4);
-        // 使用u32拷贝 (EZODE的ReadSram使用u32)
+    for (int bank = 0; bank < 4; bank++) {
+        // 切换到对应的SRAM Bank
+        SRAM_BANK_SEL = EWRAM_START_SECTOR + bank;
+
+        int word_offset = bank * (SECTOR_SIZE / 4);
+        // 从SRAM读取并组装成32位写入EWRAM（提高性能）
         for (uint32_t i = 0; i < SECTOR_SIZE / 4; i++) {
-            ewram[word_offset + i] = flash_src[i];
+            uint32_t value = sram[i*4] |
+                           (sram[i*4+1] << 8) |
+                           (sram[i*4+2] << 16) |
+                           (sram[i*4+3] << 24);
+            ewram[word_offset + i] = value;
         }
     }
-    
-    // 恢复IWRAM和VRAM后半部分 - 从扇区4
-    volatile uint32_t *flash_sector4 = (volatile uint32_t*)(flash_base_addr + IWRAM_PALETTE_SECTOR * SECTOR_SIZE);
-    
+
+    // 恢复IWRAM和VRAM后半部分 - 从Bank 6
+    SRAM_BANK_SEL = IWRAM_PALETTE_SECTOR;
+
     // IWRAM已经在ASM中恢复了，这里恢复VRAM后32KB
-    volatile uint32_t *vram_back = (volatile uint32_t*)0x06010000;
-    volatile uint32_t *flash_vram_back = flash_sector4 + (0x8000 / 4);
-    for (uint32_t i = 0; i < 0x8000 / 4; i++) {
-        vram_back[i] = flash_vram_back[i];
+    // VRAM必须用U16写入，从SRAM读取U8后组装
+    volatile uint16_t *vram_back = (volatile uint16_t*)0x06010000;
+    volatile uint8_t *sram_vram_back = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x8000 / 2; i++) {
+        uint16_t value = sram_vram_back[i*2] | (sram_vram_back[i*2+1] << 8);
+        vram_back[i] = value;
     }
-    
+
     // 3. VRAM恢复
-    // 恢复VRAM前64KB - 从扇区5 - 使用u32拷贝
-    volatile uint32_t *vram = (volatile uint32_t*)0x06000000;
-    volatile uint32_t *flash_sector5 = (volatile uint32_t*)(flash_base_addr + VRAM_FRONT_SECTOR * SECTOR_SIZE);
-    for (uint32_t i = 0; i < SECTOR_SIZE / 4; i++) {
-        vram[i] = flash_sector5[i];
+    // 恢复VRAM前64KB - 从Bank 5
+    SRAM_BANK_SEL = VRAM_FRONT_SECTOR;
+    // VRAM必须用U16写入，从SRAM读取U8后组装
+    volatile uint16_t *vram = (volatile uint16_t*)0x06000000;
+    for (uint32_t i = 0; i < SECTOR_SIZE / 2; i++) {
+        uint16_t value = sram[i*2] | (sram[i*2+1] << 8);
+        vram[i] = value;
     }
-    
-    // 恢复调色板和OAM - 从扇区6
-    volatile uint32_t *flash_sector6 = (volatile uint32_t*)(flash_base_addr + VRAM_BACK_MISC_SECTOR * SECTOR_SIZE);
-    
-    // 恢复调色板 (1KB) - 从扇区6开头
-    volatile uint32_t *palette = (volatile uint32_t*)0x05000000;
-    for (uint32_t i = 0; i < 0x400 / 4; i++) {
-        palette[i] = flash_sector6[i];
+
+    // 恢复调色板和OAM - 从Bank 7
+    SRAM_BANK_SEL = VRAM_BACK_MISC_SECTOR;
+
+    // 恢复调色板 (1KB) - Palette RAM需要16/32位写入
+    // 从SRAM读取(u8)，组装后写入(u16)
+    volatile uint16_t *palette = (volatile uint16_t*)0x05000000;
+    for (uint32_t i = 0; i < 0x400 / 2; i++) {
+        uint16_t value = sram[i*2] | (sram[i*2+1] << 8);
+        palette[i] = value;
     }
-    
-    // 恢复OAM (1KB) - 使用u32拷贝
-    volatile uint32_t *oam = (volatile uint32_t*)0x07000000;
-    volatile uint32_t *flash_oam = flash_sector6 + (0x8000 / 4);
-    for (uint32_t i = 0; i < 0x400 / 4; i++) {
-        oam[i] = flash_oam[i];
+
+    // 恢复OAM (1KB) - OAM需要16/32位写入
+    // 从SRAM读取(u8)，组装后写入(u16)
+    volatile uint16_t *oam = (volatile uint16_t*)0x07000000;
+    volatile uint8_t *sram_oam = sram + 0x8000;
+    for (uint32_t i = 0; i < 0x400 / 2; i++) {
+        uint16_t value = sram_oam[i*2] | (sram_oam[i*2+1] << 8);
+        oam[i] = value;
     }
-    
+
     ////////////////////////////////////////////////////////////////////////////////////////
-    // 4. 零散数据恢复 - 从扇区6恢复系统模式SP/LR、IO寄存器、cpu_regs等
+    // 4. 零散数据恢复 - 从Bank 7恢复系统模式SP/LR、IO寄存器、cpu_regs等
     ////////////////////////////////////////////////////////////////////////////////////////
-    
-    // 计算Flash扇区6中各数据的基地址
-    volatile uint8_t *flash_sector6_u8 = (volatile uint8_t*)(flash_base_addr + VRAM_BACK_MISC_SECTOR * SECTOR_SIZE);
-    
+
+    // Bank 7已经设置好了，直接使用
+    volatile uint8_t *sram_bank7 = sram;
+
     // 有选择地恢复IO寄存器 - 使用寄存器列表（与EZODE的restore2_IO一致，u16写入）
     volatile uint16_t *io_base = (volatile uint16_t*)0x04000000;
-    volatile uint8_t *flash_io = flash_sector6_u8 + 0x9000;
+    volatile uint8_t *sram_io = sram_bank7 + 0x9000;
     
     // 获取寄存器列表地址
     uint32_t reg_list_addr;
@@ -620,25 +596,29 @@ __attribute__((target("arm"))) void load_from_flash()
     // 遍历寄存器列表，恢复指定的寄存器
     for (int i = 0; reg_list[i] != 0xFF00; i++) {
         uint16_t offset = reg_list[i];
-        // 从Flash读取2字节（Flash支持直接读取）
-        uint16_t value = *(volatile uint16_t*)(flash_io + offset);
+        // 从SRAM读取2字节（必须u8访问后组装）
+        uint16_t value = sram_io[offset] | (sram_io[offset+1] << 8);
         // 写入到IO寄存器（u16写入）
         io_base[offset / 2] = value;
     }
     
-    // 直接从Flash恢复DMA和音频寄存器 - 使用结构体指针
+    // 从SRAM恢复DMA和音频寄存器
     // 注意：load_from_flash永远不会返回，所以必须在这里恢复所有寄存器
-    volatile rts_temp_regs_t *flash_rts_regs = (volatile rts_temp_regs_t*)(flash_sector6_u8 + 0x8400 + 0x40);
+    volatile uint8_t *sram_rts_regs = sram_bank7 + 0x8400 + 0x40;
     
-    // 恢复DMA控制寄存器到硬件
-    io_base[0x00BA / 2] = flash_rts_regs->dma_control[0];  // DMA0CNT_H
-    io_base[0x00C6 / 2] = flash_rts_regs->dma_control[1];  // DMA1CNT_H 
-    io_base[0x00D2 / 2] = flash_rts_regs->dma_control[2];  // DMA2CNT_H
-    io_base[0x00DE / 2] = flash_rts_regs->dma_control[3];  // DMA3CNT_H
-    
+    // 恢复DMA控制寄存器到硬件（从rts_temp_regs_t结构读取）
+    // dma_control在结构体偏移0位置，每个是uint16_t
+    for (int i = 0; i < 4; i++) {
+        uint16_t value = sram_rts_regs[i*2] | (sram_rts_regs[i*2+1] << 8);
+        io_base[(0x00BA + i*0x0C) / 2] = value;  // DMA0-3CNT_H
+    }
+
     // 恢复音频寄存器到硬件
-    io_base[0x0080 / 2] = flash_rts_regs->sound_regs[0];   // SOUNDCNT_L
-    io_base[0x0084 / 2] = flash_rts_regs->sound_regs[1];   // SOUNDCNT_X
+    // sound_regs在结构体偏移8位置
+    uint16_t sound_l = sram_rts_regs[8] | (sram_rts_regs[9] << 8);
+    uint16_t sound_x = sram_rts_regs[10] | (sram_rts_regs[11] << 8);
+    io_base[0x0080 / 2] = sound_l;   // SOUNDCNT_L
+    io_base[0x0084 / 2] = sound_x;   // SOUNDCNT_X
     
     /* ============================================================
      * 额外添加：恢复32位背景变换寄存器
@@ -646,44 +626,58 @@ __attribute__((target("arm"))) void load_from_flash()
      * 从已保存的IO寄存器数据中恢复BG2X/Y和BG3X/Y
      * ============================================================ */
     volatile uint32_t *io32_base = (volatile uint32_t*)0x04000000;
-    volatile uint32_t *flash_io32 = (volatile uint32_t*)flash_io;
-    
-    // 恢复BG2X/Y和BG3X/Y (各4字节)
-    io32_base[0x0028/4] = flash_io32[0x0028/4];  // BG2X
-    io32_base[0x002C/4] = flash_io32[0x002C/4];  // BG2Y
-    io32_base[0x0038/4] = flash_io32[0x0038/4];  // BG3X
-    io32_base[0x003C/4] = flash_io32[0x003C/4];  // BG3Y
+
+    // 恢复BG2X/Y和BG3X/Y (各4字节，需要从SRAM u8组装成u32)
+    uint32_t bg2x = sram_io[0x28] | (sram_io[0x29] << 8) | (sram_io[0x2A] << 16) | (sram_io[0x2B] << 24);
+    uint32_t bg2y = sram_io[0x2C] | (sram_io[0x2D] << 8) | (sram_io[0x2E] << 16) | (sram_io[0x2F] << 24);
+    uint32_t bg3x = sram_io[0x38] | (sram_io[0x39] << 8) | (sram_io[0x3A] << 16) | (sram_io[0x3B] << 24);
+    uint32_t bg3y = sram_io[0x3C] | (sram_io[0x3D] << 8) | (sram_io[0x3E] << 16) | (sram_io[0x3F] << 24);
+
+    io32_base[0x0028/4] = bg2x;  // BG2X
+    io32_base[0x002C/4] = bg2y;  // BG2Y
+    io32_base[0x0038/4] = bg3x;  // BG3X
+    io32_base[0x003C/4] = bg3y;  // BG3Y
     /* ============================================================
      * 额外添加部分结束
      * ============================================================ */
     
     // 清零中断标志寄存器 IF (Interrupt Request Flags / IRQ Acknowledge)
     io_base[0x0202 / 2] = 0;
-    
-    
-        // 恢复IWRAM和调色板 - 从扇区4
-    // 恢复系统模式SP和LR寄存器 - 直接从Flash读取
+
+    ////////////////////////////////////////////////////////////////////////////////////////
+    // 关键步骤：将cpu_regs从SRAM复制到EWRAM末尾，便于后续32位访问
+    ////////////////////////////////////////////////////////////////////////////////////////
+
+    // 将52字节的cpu_regs从SRAM Bank 7复制到EWRAM末尾（0x0203FE00）
+    // 这样后面可以用32位访问恢复寄存器
+    volatile uint8_t *sram_cpu_regs = sram_bank7 + 0x8400;
+    volatile uint8_t *ewram_buffer = (volatile uint8_t*)0x0203FE00;
+    for (uint32_t i = 0; i < 52; i++) {
+        ewram_buffer[i] = sram_cpu_regs[i];
+    }
+
+    // 恢复系统模式SP和LR寄存器 - 从EWRAM缓冲区读取（已经复制好了）
     // 这需要切换到系统模式，恢复寄存器，然后切换回来
-    volatile uint8_t *cpu_regs_on_flash = flash_sector6_u8 + 0x8400;
+    volatile uint32_t *ewram_cpu_regs = (volatile uint32_t*)0x0203FE00;
     asm volatile(
         "mrs r0, cpsr\n"                // 保存当前CPSR
-        
-        // 直接从Flash读取SPSR
-        "ldr r7, %[cpu_regs]\n"    // r7 = cpu_regs在flash上的地址
-        "ldr r2, [r7]\n"                // 直接从Flash读取SPSR
+
+        // 从EWRAM缓冲区读取SPSR（32位访问）
+        "ldr r7, %[cpu_regs]\n"         // r7 = EWRAM缓冲区地址
+        "ldr r2, [r7]\n"                // 直接读取SPSR（32位）
         "msr spsr_cxsf, r2\n"           // 恢复SPSR irq状态
 
         "mov r1,#0xDF\n"                // 切换到系统模式
         "msr cpsr_cf, r1\n"
         "nop\n"
-        
-        "add r7, r7, #0x2C\n"           // 跳到系统模式SP/LR位置 (0x8400+0x2C)
-        "ldmia r7!,{r13-r14}\n"         // 直接从Flash恢复r13-r14,即SP和LR寄存器
-        
+
+        "add r7, r7, #0x2C\n"           // 跳到系统模式SP/LR位置
+        "ldmia r7!, {r13-r14}\n"        // 直接恢复SP和LR（32位访问）
+
         "msr cpsr_cf, r0\n"             // 恢复CPSR,即，切换回到IRQ模式
         "nop\n"
         :
-        : [cpu_regs] "m" (cpu_regs_on_flash)
+        : [cpu_regs] "m" (ewram_cpu_regs)
         : "r0", "r1", "r2", "r7", "memory"
     );
     
@@ -691,42 +685,58 @@ __attribute__((target("arm"))) void load_from_flash()
     // 音频寄存器恢复 - 直接从Flash恢复到硬件寄存器
     ////////////////////////////////////////////////////////////////////////////////////////
     
-    // 恢复音频寄存器 (0x4000060-0x4000090) - 从扇区6的0x9060偏移
-    volatile uint8_t *flash_audio = flash_sector6_u8 + 0x9060;
-    volatile uint8_t *audio_reg = (volatile uint8_t*)0x04000060;
-    for (uint32_t i = 0; i < 0x30; i++) {  // 48字节
-        audio_reg[i] = flash_audio[i];
+    // 恢复音频寄存器 (0x4000060-0x4000090) - 从Bank 7的0x9060偏移
+    // SRAM必须u8访问，音频寄存器需要u16写入
+    volatile uint8_t *sram_audio = sram_bank7 + 0x9060;
+    volatile uint16_t *audio_reg = (volatile uint16_t*)0x04000060;
+    for (uint32_t i = 0; i < 0x30 / 2; i++) {  // 48字节 = 24个u16
+        uint16_t value = sram_audio[i*2] | (sram_audio[i*2+1] << 8);
+        audio_reg[i] = value;
     }
-    
+
     ////////////////////////////////////////////////////////////////////////////////////////
     // 恢复结束
     ////////////////////////////////////////////////////////////////////////////////////////
 
     // 禁用绿色交换
     *green_swap_reg = 0;
-    
+
+    // 切换到Bank 6来读取IWRAM数据
+    SRAM_BANK_SEL = IWRAM_PALETTE_SECTOR;
+
     // 恢复IRQ模式的寄存器并跳转到原始中断处理程序
     asm volatile(
-        
-        // 恢复IWRAM - 纯寄存器实现
-        "ldr r12, %[cpu_regs]\n"
-        "ldr r2, %[sector_addr]\n"           // r2 = flash基地址
+
+        // 恢复IWRAM - 从SRAM Bank 6读取（Bank已经设置好）
+        "ldr r12, %[cpu_regs]\n"            // r12 = EWRAM缓冲区地址（用于后续恢复寄存器）
+        "mov r2, #0x0E000000\n"             // r2 = SRAM基地址
         "mov r3, #0x03000000\n"             // r3 = IWRAM地址
         "mov r4, #0x8000\n"                 // r4 = 32KB计数器
 
-        "iwram_copy_loop:\n"                              // 循环标签
-        "ldr r5, [r2], #4\n"                // 从flash读取4字节，并递增r2
-        "str r5, [r3], #4\n"                // 写入IWRAM，并递增r3
-        "subs r4, r4, #4\n"                 // 递减计数器
-        "bne iwram_copy_loop\n"                          // 如果不为0，继续循环
+        "iwram_copy_loop:\n"                // 循环标签
+        "ldrb r5, [r2], #1\n"               // 从SRAM读取1字节，并递增r2
+        "strb r5, [r3], #1\n"               // 写入IWRAM，并递增r3
+        "subs r4, r4, #1\n"                 // 递减计数器
+        "bne iwram_copy_loop\n"             // 如果不为0，继续循环
 
-        "ldmia r12!, {r3-r11,sp,lr}\n"
+        // 恢复Bank 0，让游戏能正常访问SRAM
+        "mov r5, #0x09000000\n"
+        "mov r6, #0\n"
+        "strh r6, [r5]\n"                   // SRAM_BANK_SEL = 0
+
+        // 从EWRAM缓冲区恢复寄存器（已经复制到0x0203FE00）
+        // r12已经指向EWRAM缓冲区
+        "add r12, r12, #4\n"                // 跳过SPSR（从+4开始）
+        "ldmia r12!, {r4-r11,sp,lr}\n"      // 直接恢复r4-r11,sp,lr（32位访问）
+
+        // r3需要单独处理（ldmia不能包含r3因为r12在r3之后）
+        "ldr r12, %[cpu_regs]\n"            // 重新加载EWRAM缓冲区地址
+        "ldr r3, [r12, #4]\n"               // 恢复r3（位于偏移4）
         "\n"
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
         :
-        : [sector_addr] "m" (flash_sector4),
-          [cpu_regs] "m" (cpu_regs_on_flash)
+        : [cpu_regs] "m" (ewram_cpu_regs)
         : "memory"
     );
 }
@@ -1348,107 +1358,114 @@ __attribute__((target("arm"))) void restore_sram_from_sector(int sector_num, uin
 // 检查RTS存档标志是否有效
 __attribute__((target("arm"))) bool check_rts_save_flag(void)
 {
-    // 计算扇区6的flash地址 + 0xFFF0偏移
-    uint32_t flash_sector_addr;
-    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
-    uint32_t flag_flash_addr = flash_sector_addr + (VRAM_BACK_MISC_SECTOR * SECTOR_SIZE) + 0xFFF0;
-    
+    // 切换到Bank 7检查RTS标志
+    SRAM_BANK_SEL = VRAM_BACK_MISC_SECTOR;
+
+    // SRAM Bank 7的0xFFF0偏移处
+    volatile uint8_t *sram_flag = (volatile uint8_t*)(0x0E000000 + 0xFFF0);
+
     // 获取RTS标志字符串地址
     uint32_t expected_flag_addr;
     GET_REL_ADDR(rts_flag_string, expected_flag_addr);
     const char *expected_flag = (const char*)expected_flag_addr;
-    
-    // 直接从Flash读取并比较标志，不使用spend缓冲
-    volatile uint8_t *flash_flag = (volatile uint8_t*)flag_flash_addr;
+
+    // 从SRAM读取并比较标志（SRAM必须u8访问）
     for (uint32_t i = 0; i < 16; i++) {
-        if (flash_flag[i] != expected_flag[i]) {
+        if (sram_flag[i] != expected_flag[i]) {
+            // 恢复Bank 0后返回
+            SRAM_BANK_SEL = 0;
             return false;
         }
     }
-    
+
+    // 恢复Bank 0后返回true
+    SRAM_BANK_SEL = 0;
     return true;
 }
 
-// 保存EWRAM到Flash扇区0-3
+// 保存EWRAM到SRAM Bank 1-4
 __attribute__((target("arm"))) void save_ewram_to_flash(int flash_type_index)
 {
     volatile uint8_t *ewram = (volatile uint8_t*)0x02000000;
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
-    
-    // EWRAM是256KB，分4个64KB扇区保存
-    for (int sector = 0; sector < 4; sector++) {
+
+    // EWRAM是256KB，分4个64KB Bank保存
+    for (int bank = 0; bank < 4; bank++) {
+        // 切换到对应的SRAM Bank (1-4)
+        SRAM_BANK_SEL = EWRAM_START_SECTOR + bank;
+
         // 复制64KB从EWRAM到SRAM（8bit操作）
-        int sector_start = sector * SECTOR_SIZE;
+        int bank_start = bank * SECTOR_SIZE;
         for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
-            sram[i] = ewram[sector_start + i];
+            sram[i] = ewram[bank_start + i];
         }
-        // 写入到对应扇区
-        write_sram_to_sector(EWRAM_START_SECTOR + sector, flash_type_index, 0);
     }
 }
 
-// 保存IWRAM和VRAM后半部分到Flash扇区5
+// 保存IWRAM和VRAM后半部分到SRAM Bank 6
 __attribute__((target("arm"))) void save_iwram_vram_back_to_flash(int flash_type_index)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
-    
-    
+
+    // 切换到Bank 6
+    SRAM_BANK_SEL = IWRAM_PALETTE_SECTOR;
+
     // 复制IWRAM (32KB) 到SRAM的0x0000偏移
     volatile uint8_t *iwram = (volatile uint8_t*)0x03000000;
     for (uint32_t i = 0; i < 0x8000; i++) {
         sram[i] = iwram[i];
     }
-    
+
     // 复制VRAM后32KB (0x06010000) 到SRAM的0x8000偏移
     volatile uint8_t *vram_back = (volatile uint8_t*)0x06010000;
     volatile uint8_t *sram_vram = sram + 0x8000;
     for (uint32_t i = 0; i < 0x8000; i++) {
         sram_vram[i] = vram_back[i];
     }
-    
-    // 写入到扇区5
-    write_sram_to_sector(IWRAM_PALETTE_SECTOR, flash_type_index, 0);
 }
 
-// 保存VRAM前64KB到Flash扇区4
+// 保存VRAM前64KB到SRAM Bank 5
 __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_index)
 {
     volatile uint8_t *vram = (volatile uint8_t*)0x06000000;
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
-    
+
+    // 切换到Bank 5
+    SRAM_BANK_SEL = VRAM_FRONT_SECTOR;
+
     // 复制VRAM前64KB到SRAM（8bit操作）
     for (uint32_t i = 0; i < SECTOR_SIZE; i++) {
         sram[i] = vram[i];
     }
-    
-    // 写入到扇区4
-    write_sram_to_sector(VRAM_FRONT_SECTOR, flash_type_index, 0);
 }
 
-// 保存VRAM后半部分、OAM、IO寄存器等到Flash扇区6
+// 保存VRAM后半部分、OAM、IO寄存器等到SRAM Bank 7
 __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
-    
+
+    // 切换到Bank 7
+    SRAM_BANK_SEL = VRAM_BACK_MISC_SECTOR;
+
     // 1. 复制调色板 (1KB) 到SRAM的0x0000偏移
     volatile uint8_t *palette = (volatile uint8_t*)0x05000000;
     for (uint32_t i = 0; i < 0x400; i++) {
         sram[i] = palette[i];
     }
-    
+
     // 2. 复制OAM (1KB) 到SRAM的0x8000偏移（保持原位置）
     volatile uint8_t *oam = (volatile uint8_t*)0x07000000;
     volatile uint8_t *sram_oam = sram + 0x8000;
     for (uint32_t i = 0; i < 0x400; i++) {
         sram_oam[i] = oam[i];
     }
-    
+
     // 3. 复制cpu_regs到SRAM的0x8400偏移，然后保存rts_temp_regs结构体
     volatile uint8_t *sram_spend = sram + 0x8400;
     for (uint32_t i = 0; i < 52; i++) {  // 大小是52字节
         sram_spend[i] = cpu_regs_addr[i];
     }
-    
+
     // 在cpu_regs+0x40位置直接保存rts_temp_regs结构体
     volatile uint8_t *sram_rts_regs = (volatile uint8_t*)(sram_spend + 0x40);
     uint8_t *rts_regs_src = (uint8_t*)rts_regs;
@@ -1456,35 +1473,35 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts
         sram_rts_regs[i] = rts_regs_src[i];
     }
     // *sram_rts_regs = *rts_regs;  // 不能直接复制整个结构体，因为会调用memcpy
-    
+
     // 4. 复制I/O寄存器0x04000000-0x04000060到SRAM的0x9000偏移
     volatile uint8_t *io_base = (volatile uint8_t*)0x04000000;
     volatile uint8_t *sram_io1 = sram + 0x9000;
     for (uint32_t i = 0; i < 0x60; i++) {
         sram_io1[i] = io_base[i];
     }
-    
+
     // 5. 直接复制音频寄存器 (0x4000060-0x4000090) 到SRAM的0x9060偏移
     volatile uint8_t *audio_reg = (volatile uint8_t*)0x04000060;
     volatile uint8_t *sram_audio = sram + 0x9060;
     for (uint32_t i = 0; i < 0x30; i++) {  // 48字节
         sram_audio[i] = audio_reg[i];
     }
-    
+
     // 6. 用原始的sound寄存器值覆盖SRAM中的对应位置
     // SOUNDCNT_L在0x04000080，相对于0x04000060的偏移是0x20
     // SOUNDCNT_X在0x04000084，相对于0x04000060的偏移是0x24
     volatile uint16_t *sram_audio_16 = (volatile uint16_t*)(sram + 0x9060);
     sram_audio_16[0x20/2] = rts_regs->sound_regs[0];  // SOUNDCNT_L
     sram_audio_16[0x24/2] = rts_regs->sound_regs[1];  // SOUNDCNT_X
-    
+
     // 7. 复制I/O寄存器0x04000090-0x040003FE到SRAM的0x9090偏移
     volatile uint8_t *io_base2 = (volatile uint8_t*)0x04000090;
     volatile uint8_t *sram_io2 = sram + 0x9090;
     for (uint32_t i = 0; i < 0x370; i++) {
         sram_io2[i] = io_base2[i];
     }
-    
+
     // 9. 写入RTS标志字符串到SRAM的0xFFF0偏移
     // 使用GET_REL_ADDR获取字符串地址
     uint32_t flag_addr;
@@ -1494,9 +1511,6 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts
     for (uint32_t i = 0; i < 16; i++) {
         sram_flag[i] = flag_ptr[i];
     }
-    
-    // 写入到扇区6
-    write_sram_to_sector(VRAM_BACK_MISC_SECTOR, flash_type_index, 0);
 }
 
 asm(R"(
