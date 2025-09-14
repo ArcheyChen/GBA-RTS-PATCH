@@ -1,15 +1,13 @@
+
 // Payload头部必须在文件开头，patcher需要
 #include <stdint.h>
 #include <stdbool.h>
 #include "payload_header.h"
 
-#define PROGRAM_ARGS_SAVE_SIZE(x) ((x) & (~0xFFF))
-#define PROGRAM_ARGS_WBUF_SIZE(x) ((x) & 0xFFF)
-
 // 前向声明
 void patched_entrypoint(void);
 
-// Payload头部结构 - 必须在文件最开始,然后必须是强行改为text，否则无法获取相对偏移 
+// Payload头部结构 - 必须在文件最开始,然后必须是强行改为text，否则无法获取相对偏移
 __attribute__((section(".text"))) const struct PayloadHeader payload_header = {
     .original_entrypoint = 0x080000c0,
     .ctrl_flag = 0xF0,                 // 控制标志 留作备用，0xF0代表这是RTS
@@ -205,7 +203,6 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 #define AGB_SRAM_SIZE SRAM_SIZE*1024
 #define SRAM_BANK_SEL (*(volatile unsigned short*) 0x09000000)
 
-#define _FLASH_WRITE(pa, pd) { *(((unsigned short *)AGB_ROM)+((pa)/2)) = pd; __asm("nop"); }
 
 // 扇区定义 - 512KB SRAM分为8个64KB的Bank
 // Bank 0: 原始游戏SRAM（不动）
@@ -224,29 +221,15 @@ __attribute__((section(".text"), aligned(2))) const uint16_t io_register_list[] 
 #define GET_REL_VALUE(symbol, var) \
     asm volatile("ldr %0, " #symbol : "=r"(var))
 
-// Flash函数表结构体
-typedef struct {
-    uint32_t identify_start;
-    uint32_t identify_end;
-    uint32_t erase_start;
-    uint32_t erase_end;
-    uint32_t program_start;
-    uint32_t program_end;
-} flash_functions_t;
 
-// 前向声明  
+// 前向声明
 void patched_entrypoint(void);
 uint32_t init_before_game(void);
 void rts_save(rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr);
-int run_arm_from_ram(uint32_t r0, uint32_t r1, uint32_t r2, uint32_t r3);
 void keypad_process(volatile uint8_t *cpu_regs_addr);
 
 // 前向声明函数
 void load_from_flash();
-void copy_flash_to_sram(uint32_t flash_addr, uint32_t size);
-void restore_sram_from_sector(int sector_num, uint32_t size);
-void erase_all_sectors(int flash_type_index, uint32_t size);
-void write_sram_to_sector(int sector_num, int flash_type_index, uint32_t size);
 void save_ewram_to_flash(int flash_type_index);
 void save_iwram_vram_back_to_flash(int flash_type_index);
 void save_vram_front_to_flash(int flash_type_index);
@@ -476,30 +459,6 @@ __attribute__((target("arm"))) uint32_t init_before_game(void)
     *green_swap_reg = 0;
   }
 
-// 通用的Flash到SRAM复制函数 - 复用patched_entrypoint中的逻辑
-__attribute__((target("arm"))) void copy_flash_to_sram(uint32_t flash_addr, uint32_t size)
-{
-    volatile uint8_t *flash_src = (volatile uint8_t*)flash_addr;
-    volatile uint8_t *sram_dst = (volatile uint8_t*)0x0E000000;
-    volatile uint8_t *sram_end = sram_dst + size;
-    volatile uint16_t *bank_reg = (volatile uint16_t*)0x09000000;
-    
-    // SRAM初始化循环 - 从patched_entrypoint复用的逻辑
-    *bank_reg = 0;
-
-    while (sram_dst < sram_end) {
-        // 计算当前bank (根据SRAM地址的bit 16)
-        if (((uint32_t)sram_dst >> 16) & 1) {
-            *bank_reg = 1;
-            sram_dst = (volatile uint8_t*)0x0E000000;
-        }
-        // 从Flash复制到SRAM
-        *sram_dst++ = *flash_src++;
-    }
-    
-    // 设置bank为0（为不支持bank的软件）
-    *bank_reg = 0;
-}
 
 // 读档函数 - 直接从Flash中恢复到内存
 __attribute__((target("arm"))) void load_from_flash()
@@ -741,619 +700,23 @@ __attribute__((target("arm"))) void load_from_flash()
     );
 }
     
-asm(R"(
-.align 4
-# Flash函数表 - 对应C结构体 flash_fn_table_c[]
-flash_fn_table:
-# Flash type 1 - flash_functions_t[0]
-.word identify_flash_1
-.word identify_flash_1_end
-.word erase_flash_1
-.word erase_flash_1_end
-.word program_flash_1
-.word program_flash_1_end
-# Flash type 4 - flash_functions_t[1]
-.word identify_flash_4
-.word identify_flash_4_end
-.word erase_flash_4
-.word erase_flash_4_end
-.word program_flash_4
-.word program_flash_4_end
-# Flash type 2 - flash_functions_t[2]
-.word identify_flash_2
-.word identify_flash_2_end
-.word erase_flash_2
-.word erase_flash_2_end
-.word program_flash_2
-.word program_flash_2_end
-# Flash type 3 - flash_functions_t[3]
-.word identify_flash_3
-.word identify_flash_3_end
-.word erase_flash_3
-.word erase_flash_3_end
-.word program_flash_3
-.word program_flash_3_end
-# 终止条目 - 12 bytes of zeros - flash_functions_t[4]
-.zero 12
-
-)");
-
-// 在RAM中运行ARM函数 - 混合C和汇编实现
-__attribute__((target("arm"))) 
-int run_arm_from_ram(uint32_t arg0, uint32_t arg1, uint32_t func_start, uint32_t func_end)
-{
-    int result;
-    
-    asm volatile(
-        "mrs r0, CPSR\n"          // 备份当前CPSR
-        "mov r1, #0xDF\n"		//切换到系统模式
-        "msr cpsr_cf, r1\n"
-        "nop\n"                     // 确保CPSR更新完成
-        "push {r0,lr}\n"          // 保存CPSR到栈,注意，此时已经是系统栈
-
-        "mov r4, sp\n"                    // 保存当前栈指针
-        
-        "run_copy_loop:\n"    
-        "ldr r5, [%[end], #-4]!\n"        // 从函数末尾向前复制
-        "push {r5}\n"
-        "cmp %[start], %[end]\n"
-        "bne run_copy_loop\n"
-        
-        // 设置调用参数
-        "mov r0, %[arg0]\n"               // 第一个参数
-        "mov r1, %[arg1]\n"               // 第二个参数  
-        "mov lr, pc\n"                    // 设置返回地址（PC+8）
-        "mov pc, sp\n"                    // 调用ARM函数（直接从栈上执行）
-        
-        "mov %[result], r0\n"             // 保存返回值
-        "mov sp, r4\n"                    // 恢复栈指针(清空拷贝过来的函数代码占的空间)
-
-        "pop {r1,lr}\n"                      // 恢复CPSR
-        "msr cpsr_cf, r1\n"               // 恢复CPSR,即，返回之前的模式（IRQ）
-        
-        : [result] "=r" (result)
-        : [arg0] "r" (arg0), [arg1] "r" (arg1), 
-          [start] "r" (func_start), [end] "r" (func_end)
-        : "r0", "r1", "r2", "r4", "r5", "lr", "memory"
-    );
-    
-    return result;
-}
 
 
-int __attribute__((target("arm"))) identify_flash_1()
-{
-    unsigned rom_data, data;
-	//stop_dma_interrupts();
-	rom_data = *(unsigned *)AGB_ROM;
-	
-	// Type 1 or 4
-	_FLASH_WRITE(0, 0xFF);
-	_FLASH_WRITE(0, 0x90);
-	data = *(unsigned *)AGB_ROM;
-	_FLASH_WRITE(0, 0xFF);
-	if (rom_data != data) {
-		// Check if the chip is responding to this command
-		// which then needs a different write command later
-		_FLASH_WRITE(0x59, 0x42);
-		data = *(unsigned char *)(AGB_ROM+0xB2);
-		_FLASH_WRITE(0x59, 0x96);
-		_FLASH_WRITE(0, 0xFF);
-		if (data != 0x96) {
-			//resume_interrupts();
-            	
-            for (volatile int i = 0; i < 1024; ++i)
-                __asm("nop");
-            
-            
-			return 0;
-		}
-		//resume_interrupts();
-		return 1;
-	}
-    return 0;
-}
-asm(".align 4\n"
-    "identify_flash_1_end:");
 
-void __attribute__((target("arm"))) erase_flash_1(unsigned sa, unsigned size)
-{
-    // Erase flash sectors based on size
-    // Flash type 1 typically has 128KB sectors
-    unsigned sector_size = 0x20000; // 128KB WTF?
-    unsigned end_addr = sa + size;
-    if (end_addr % sector_size) {
-        end_addr -= end_addr % sector_size;
-        end_addr += sector_size;
-    }
-    for (; sa < end_addr; sa += sector_size) {
-        _FLASH_WRITE(sa, 0xFF);
-        _FLASH_WRITE(sa, 0x60);
-        _FLASH_WRITE(sa, 0xD0);
-        _FLASH_WRITE(sa, 0x20);
-        _FLASH_WRITE(sa, 0xD0);
-        while (1) {
-            __asm("nop");
-            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0x80) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa, 0xFF);
-    }
-}
-asm(".align 4\n"
-    "erase_flash_1_end:");
 
-void __attribute__((target("arm"))) program_flash_1(unsigned sa, unsigned save_size_with_wbuf)
-{
-    // Write data
-    SRAM_BANK_SEL = 0;
-    int i=0;
-    unsigned save_size = PROGRAM_ARGS_SAVE_SIZE(save_size_with_wbuf);
-    const int wbuf = PROGRAM_ARGS_WBUF_SIZE(save_size_with_wbuf);
-    for (;i<save_size;) {
-        if (i == AGB_SRAM_SIZE) SRAM_BANK_SEL = 1;
-        if (wbuf) {
-            _FLASH_WRITE(sa, 0xE8);
-            while (1) {
-                __asm("nop");
-                if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0x80) {
-                    break;
-                }
-            }
-            _FLASH_WRITE(sa, (wbuf>>1)-1);
-            for (int j=0; j<wbuf; j+=2) {
-                if (i+j == AGB_SRAM_SIZE) SRAM_BANK_SEL = 1;
-                _FLASH_WRITE(sa+i+j, (*(unsigned char *)(AGB_SRAM+i+j+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i+j)));
-            }
-            _FLASH_WRITE(sa, 0xD0);
-            _FLASH_WRITE(sa, 0x70);
-            i += wbuf;
-        } else {
-            _FLASH_WRITE(0, 0x70);
-            _FLASH_WRITE(0, 0x10);
-            _FLASH_WRITE(sa+i, (*(unsigned char *)(AGB_SRAM+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i)));
-            i+=2;
-        }
-        while (1) {
-            __asm("nop");
-            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0x80) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa, 0xFF);
-    }
-}
 
-asm(".align 4\n"
-    "program_flash_1_end:");
 
-int __attribute__((target("arm"))) identify_flash_2()
-{
-    unsigned rom_data, data;
-	//stop_dma_interrupts();
-	rom_data = *(unsigned *)AGB_ROM;
-    
-    _FLASH_WRITE(0, 0xF0);
-	_FLASH_WRITE(0xAAA, 0xA9);
-	_FLASH_WRITE(0x555, 0x56);
-	_FLASH_WRITE(0xAAA, 0x90);
-	data = *(unsigned *)AGB_ROM;
-	_FLASH_WRITE(0, 0xF0);
-	if (rom_data != data) {
-		//resume_interrupts();
-		return 1;
-	}
-    return 0;
-}
-asm(".align 4\n"
-    "identify_flash_2_end:");
 
-void __attribute__((target("arm"))) erase_flash_2(unsigned sa, unsigned size)
-{
-    // Erase flash sectors based on size
-    // Flash type 2 typically has 64KB sectors
-    unsigned sector_size = 0x10000; // 64KB
-    unsigned end_addr = sa + size;
-    if (end_addr % sector_size) {
-        end_addr -= end_addr % sector_size;
-        end_addr += sector_size;
-    }
-    
-    for (; sa < end_addr; sa += sector_size) {
-        _FLASH_WRITE(sa, 0xF0);
-        _FLASH_WRITE(0xAAA, 0xA9);
-        _FLASH_WRITE(0x555, 0x56);
-        _FLASH_WRITE(0xAAA, 0x80);
-        _FLASH_WRITE(0xAAA, 0xA9);
-        _FLASH_WRITE(0x555, 0x56);
-        _FLASH_WRITE(sa, 0x30);
-        while (1) {
-            __asm("nop");
-            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa, 0xF0);
-    }
-}
-asm(".align 4\n"
-    "erase_flash_2_end:");
 
-void __attribute__((target("arm"))) program_flash_2(unsigned sa, unsigned save_size_with_wbuf)
-{
-    // Write data
-    SRAM_BANK_SEL = 0;
-    unsigned save_size = PROGRAM_ARGS_SAVE_SIZE(save_size_with_wbuf);
-    const int wbuf = PROGRAM_ARGS_WBUF_SIZE(save_size_with_wbuf);
-    uint32_t last_addr;
-    uint16_t expected_data;
-    uint16_t status1, status2;
-    int i=0;
-    for (;i<save_size;) {
-        if (i == AGB_SRAM_SIZE)
-            SRAM_BANK_SEL = 1;
-        if (wbuf) {
-            _FLASH_WRITE(0xAAA, 0xA9);
-            _FLASH_WRITE(0x555, 0x56);
-            _FLASH_WRITE(sa, 0x26);
-            _FLASH_WRITE(sa, (wbuf>>1)-1);
-            for (int j=0; j<wbuf; j+=2) {
-                if (i+j == AGB_SRAM_SIZE) SRAM_BANK_SEL = 1;
-                _FLASH_WRITE(sa+i+j, (*(unsigned char *)(AGB_SRAM+i+j+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i+j)));
-            }
-            _FLASH_WRITE(sa, 0x2A);
-            last_addr = sa + i + wbuf - 2;  // 最后一个16位写入地址
-            expected_data = (*((unsigned char*)AGB_SRAM+i+wbuf-1)) << 8 | (*((unsigned char*)AGB_SRAM+i+wbuf-2));
-            while (1) {
-                status1 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                
-                // 检查DQ7位（Data Polling）- 编程完成时DQ7应等于期望数据的DQ7
-                if ((status1 & 0x80) == (expected_data & 0x80)) {
-                    // DQ7位匹配，可能编程完成，再次读取确认
-                    status2 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                    if ((status2 & 0x80) == (expected_data & 0x80)) {
-                        break; // 编程完成
-                    }
-                }
-                
-                // 检查DQ5位（Timeout）- 如果置位表示编程超时
-                if (status1 & 0x20) {
-                    // 发生超时，再次检查DQ7
-                    status2 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                    if ((status2 & 0x80) == (expected_data & 0x80)) {
-                        break; // 编程实际已完成
-                    } else {
-                        _FLASH_WRITE(sa, 0xF0);
-                        break;
-                    }
-                }
-                
-                __asm("nop");
-            }
-            i += wbuf;
-        } else {
-            _FLASH_WRITE(0xAAA, 0xA9);
-            _FLASH_WRITE(0x555, 0x56);
-            _FLASH_WRITE(0xAAA, 0xA0);
-            _FLASH_WRITE(sa+i, (*(unsigned char *)(AGB_SRAM+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i)));
-            while (1) {
-                __asm("nop");
-                if (*(((unsigned short *)AGB_ROM)+((sa+i)/2)) == ((*(unsigned char *)(AGB_SRAM+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i)))) {
-                    break;
-                }
-            }
-            i += 2;
-        }
-    }
-    _FLASH_WRITE(sa, 0xF0);
-}
-asm(".align 4\n"
-    "program_flash_2_end:");
 
-int __attribute__((target("arm"))) identify_flash_3()
-{
-    unsigned rom_data, data;
-	//stop_dma_interrupts();
-	rom_data = *(unsigned *)AGB_ROM;
-    
-    _FLASH_WRITE(0, 0xF0);
-	_FLASH_WRITE(0xAAA, 0xAA);
-	_FLASH_WRITE(0x555, 0x55);
-	_FLASH_WRITE(0xAAA, 0x90);
-	data = *(unsigned *)AGB_ROM;
-	_FLASH_WRITE(0, 0xF0);
-	if (rom_data != data) {
-		//resume_interrupts();
-        return 1;
-	}
-    return 0;
-}
-asm(".align 4\n"
-    "identify_flash_3_end:");
 
-void __attribute__((target("arm"))) erase_flash_3(unsigned sa, unsigned size)
-{
-    // Erase flash sectors based on size
-    // Flash type 3 typically has 64KB sectors
-    unsigned sector_size = 0x10000; // 64KB
-    unsigned end_addr = sa + size;
-    if (end_addr % sector_size) {
-        end_addr -= end_addr % sector_size;
-        end_addr += sector_size;
-    }
-    
-    for (; sa < end_addr; sa += sector_size) {
-        _FLASH_WRITE(sa, 0xF0);
-        _FLASH_WRITE(0xAAA, 0xAA);
-        _FLASH_WRITE(0x555, 0x55);
-        _FLASH_WRITE(0xAAA, 0x80);
-        _FLASH_WRITE(0xAAA, 0xAA);
-        _FLASH_WRITE(0x555, 0x55);
-        _FLASH_WRITE(sa, 0x30);
-        while (1) {
-            __asm("nop");
-            if (*(((unsigned short *)AGB_ROM)+(sa/2)) == 0xFFFF) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa, 0xF0);
-    }
-}
-asm(".align 4\n"
-    "erase_flash_3_end:");
 
-void __attribute__((target("arm"))) program_flash_3(unsigned sa, unsigned save_size_with_wbuf)
-{
-    // Write data
-    SRAM_BANK_SEL = 0;
-    unsigned save_size = PROGRAM_ARGS_SAVE_SIZE(save_size_with_wbuf);
-    const int wbuf = PROGRAM_ARGS_WBUF_SIZE(save_size_with_wbuf);
-    uint32_t last_addr;
-    uint16_t expected_data;
-    uint16_t status1, status2;
-    int i=0;
-    for (;i<save_size;) {
-        if (i == AGB_SRAM_SIZE)
-            SRAM_BANK_SEL = 1;
-        if (wbuf) {
-            _FLASH_WRITE(0xAAA, 0xAA);
-            _FLASH_WRITE(0x555, 0x55);
-            _FLASH_WRITE(sa, 0x25);
-            _FLASH_WRITE(sa, (wbuf>>1)-1);
-            for (int j=0; j<wbuf; j+=2) {
-                if (i+j == AGB_SRAM_SIZE) SRAM_BANK_SEL = 1;
-                _FLASH_WRITE(sa+i+j, (*(unsigned char *)(AGB_SRAM+i+j+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i+j)));
-            }
-            _FLASH_WRITE(sa, 0x29);
-            last_addr = sa + i + wbuf - 2;  // 最后一个16位写入地址
-            expected_data = (*((unsigned char*)AGB_SRAM+i+wbuf-1)) << 8 | (*((unsigned char*)AGB_SRAM+i+wbuf-2));
-            while (1) {
-                status1 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                
-                // 检查DQ7位（Data Polling）- 编程完成时DQ7应等于期望数据的DQ7
-                if ((status1 & 0x80) == (expected_data & 0x80)) {
-                    // DQ7位匹配，可能编程完成，再次读取确认
-                    status2 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                    if ((status2 & 0x80) == (expected_data & 0x80)) {
-                        break; // 编程完成
-                    }
-                }
-                
-                // 检查DQ5位（Timeout）- 如果置位表示编程超时
-                if (status1 & 0x20) {
-                    // 发生超时，再次检查DQ7
-                    status2 = *(((unsigned short *)AGB_ROM)+((last_addr)/2));
-                    if ((status2 & 0x80) == (expected_data & 0x80)) {
-                        break; // 编程实际已完成
-                    } else {
-                        _FLASH_WRITE(sa, 0xF0);
-                        break;
-                    }
-                }
-                
-                __asm("nop");
-            }
-            i += wbuf;
-        } else {
-            _FLASH_WRITE(0xAAA, 0xAA);
-            _FLASH_WRITE(0x555, 0x55);
-            _FLASH_WRITE(0xAAA, 0xA0);
-            _FLASH_WRITE(sa+i, (*(unsigned char *)(AGB_SRAM+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i)));
-            while (1) {
-                __asm("nop");
-                if (*(((unsigned short *)AGB_ROM)+((sa+i)/2)) == ((*(unsigned char *)(AGB_SRAM+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+i)))) {
-                    break;
-                }
-            }
-            i += 2;
-        }
-    }
-    _FLASH_WRITE(sa, 0xF0);
-}
-asm(".align 4\n"
-    "program_flash_3_end:");
 
-int __attribute__((target("arm"))) identify_flash_4()
-{
-    unsigned rom_data, data;
-	//stop_dma_interrupts();
-	rom_data = *(unsigned *)AGB_ROM;
-	
-	// Type 1 or 4
-	_FLASH_WRITE(0, 0xFF);
-	_FLASH_WRITE(0, 0x90);
-	data = *(unsigned *)AGB_ROM;
-	_FLASH_WRITE(0, 0xFF);
-	if (rom_data != data) {
-		// Check if the chip is responding to this command
-		// which then needs a different write command later
-		_FLASH_WRITE(0x59, 0x42);
-		data = *(unsigned char *)(AGB_ROM+0xB2);
-		_FLASH_WRITE(0x59, 0x96);
-		_FLASH_WRITE(0, 0xFF);
-		if (data != 0x96) {
-			//resume_interrupts();
-            
-            for (volatile int i = 0; i < 1024; ++i)
-                __asm("nop");
-            
-			return 1;
-		}
-	}
-    return 0;
-}
-asm(".align 4\n"
-    "identify_flash_4_end:");
 
-void __attribute__((target("arm"))) erase_flash_4(unsigned sa, unsigned size)
-{
-    // Erase flash sectors based on size
-    // Flash type 4 typically has 64KB sectors
-    unsigned sector_size = 0x10000; // 64KB
-    unsigned end_addr = sa + size;
-    if (end_addr % sector_size) {
-        end_addr -= end_addr % sector_size;
-        end_addr += sector_size;
-    }
-    
-    for (; sa < end_addr; sa += sector_size) {
-        _FLASH_WRITE(sa, 0xFF);
-        _FLASH_WRITE(sa, 0x60);
-        _FLASH_WRITE(sa, 0xD0);
-        _FLASH_WRITE(sa, 0x20);
-        _FLASH_WRITE(sa, 0xD0);
-        while (1) {
-            __asm("nop");
-            if ((*(((unsigned short *)AGB_ROM)+(sa/2)) & 0x80) == 0x80) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa, 0xFF);
-        
-        for (volatile int i = 0; i < 1024; ++i)
-            __asm("nop");
-    }
-}
-asm(".align 4\n"
-    "erase_flash_4_end:");
 
-void __attribute__((target("arm")))  program_flash_4(unsigned sa, unsigned save_size_with_wbuf)
-{
-    
-    unsigned save_size = PROGRAM_ARGS_SAVE_SIZE(save_size_with_wbuf);
-    const int wbuf = PROGRAM_ARGS_WBUF_SIZE(save_size_with_wbuf);
-    // Write data
-    int c = 0;
-    SRAM_BANK_SEL = 0;
-    while (c < save_size) {
-        if (c == AGB_SRAM_SIZE)
-            SRAM_BANK_SEL = 1;
-        _FLASH_WRITE(sa+c, 0xEA);
-        while (1) {
-            __asm("nop");
-            if ((*(((unsigned short *)AGB_ROM)+((sa+c)/2)) & 0x80) == 0x80) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa+c, 0x1FF);
-        for (int i=0; i<1024; i+=2) {
-            _FLASH_WRITE(sa+c+i, (*(unsigned char *)(AGB_SRAM+c+i+1)) << 8 | (*(unsigned char *)(AGB_SRAM+c+i)));
-        }
-        _FLASH_WRITE(sa+c, 0xD0);
-        while (1) {
-            __asm("nop");
-            if ((*(((unsigned short *)AGB_ROM)+((sa+c)/2)) & 0x80) == 0x80) {
-                break;
-            }
-        }
-        _FLASH_WRITE(sa+c, 0xFF);
-        c += 1024;
-    }
-    
-    	
-    for (volatile int i = 0; i < 1024; ++i)
-        __asm("nop");
-}
-asm(".align 4\n"
-    "program_flash_4_end:");
 
-// 扇区操作封装函数
-// 擦除整个512KB空间（调用一次即可）
-__attribute__((target("arm"))) void erase_all_sectors(int flash_type_index, uint32_t size)
-{
-    // 获取必要的地址
-    uint32_t flash_sector_addr, payload_header_addr;
-    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
-    flash_sector_addr -= 0x08000000;  // 转换为flash内偏移
-    GET_REL_ADDR(payload_header, payload_header_addr);
 
-    // 获取函数表（使用结构体）
-    flash_functions_t *flash_funcs;
-    GET_REL_ADDR(flash_fn_table, flash_funcs);
-    
-    // 获取erase函数地址
-    uint32_t erase_start = flash_funcs[flash_type_index].erase_start + payload_header_addr;
-    uint32_t erase_end = flash_funcs[flash_type_index].erase_end + payload_header_addr;
 
-    run_arm_from_ram(flash_sector_addr, size, erase_start, erase_end);
-}
-
-__attribute__((target("arm"))) uint32_t get_sector_addr(int sector_idx){
-    
-    // 获取必要的地址
-    uint32_t flash_sector_addr;
-    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
-    uint32_t sector_addr = flash_sector_addr + (sector_idx * SECTOR_SIZE) - 0x08000000;
-    return sector_addr;
-}
-// 写入SRAM到指定的64KB扇区（必须先调用erase_all_sectors）
-__attribute__((target("arm"))) void write_sram_to_sector(int sector_idx, int flash_type_index, uint32_t size)
-{
-    uint32_t payload_header_addr;
-    GET_REL_ADDR(payload_header, payload_header_addr);
-
-    struct PayloadHeader *header = (struct PayloadHeader*)&payload_header;
-    GET_REL_ADDR(payload_header, header);
-    
-    // 获取函数表（使用结构体）
-    flash_functions_t *flash_funcs;
-    GET_REL_ADDR(flash_fn_table, flash_funcs);
-    
-    // 获取program函数地址
-    uint32_t program_start = flash_funcs[flash_type_index].program_start + payload_header_addr;
-    uint32_t program_end = flash_funcs[flash_type_index].program_end + payload_header_addr;
-
-    uint32_t sector_addr = get_sector_addr(sector_idx);
-    if (size == 0) {
-        size = SECTOR_SIZE;
-    }
-    if (size > 0x20000) {
-        size = 0x20000;
-    }
-    // 写入64KB数据
-    run_arm_from_ram(sector_addr, size|(header->wbuf_size), program_start, program_end);
-}
-
-// 从指定扇区恢复SRAM（64KB）
-__attribute__((target("arm"))) void restore_sram_from_sector(int sector_num, uint32_t size)
-{
-    // 验证扇区号
-    if (sector_num >= TOTAL_SECTORS) {
-        return;
-    }
-    
-    // 计算扇区地址
-    uint32_t flash_sector_addr;
-    GET_REL_ADDR(flash_save_sector, flash_sector_addr);
-    uint32_t sector_flash_addr = flash_sector_addr + (sector_num * SECTOR_SIZE);
-    
-    // 复制64KB数据
-    if (size > 0x20000) {
-        size = 0x20000;
-    }
-    copy_flash_to_sram(sector_flash_addr, size);
-}
 
 // 检查RTS存档标志是否有效
 __attribute__((target("arm"))) bool check_rts_save_flag(void)
@@ -1384,7 +747,7 @@ __attribute__((target("arm"))) bool check_rts_save_flag(void)
 }
 
 // 保存EWRAM到SRAM Bank 1-4
-__attribute__((target("arm"))) void save_ewram_to_flash(int flash_type_index)
+__attribute__((target("arm"))) void save_ewram_to_flash(int flash_type_index __attribute__((unused)))
 {
     volatile uint8_t *ewram = (volatile uint8_t*)0x02000000;
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
@@ -1403,7 +766,7 @@ __attribute__((target("arm"))) void save_ewram_to_flash(int flash_type_index)
 }
 
 // 保存IWRAM和VRAM后半部分到SRAM Bank 6
-__attribute__((target("arm"))) void save_iwram_vram_back_to_flash(int flash_type_index)
+__attribute__((target("arm"))) void save_iwram_vram_back_to_flash(int flash_type_index __attribute__((unused)))
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
 
@@ -1425,7 +788,7 @@ __attribute__((target("arm"))) void save_iwram_vram_back_to_flash(int flash_type
 }
 
 // 保存VRAM前64KB到SRAM Bank 5
-__attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_index)
+__attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_index __attribute__((unused)))
 {
     volatile uint8_t *vram = (volatile uint8_t*)0x06000000;
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
@@ -1440,7 +803,7 @@ __attribute__((target("arm"))) void save_vram_front_to_flash(int flash_type_inde
 }
 
 // 保存VRAM后半部分、OAM、IO寄存器等到SRAM Bank 7
-__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index, rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr)
+__attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index __attribute__((unused)), rts_temp_regs_t *rts_regs, volatile uint8_t *cpu_regs_addr)
 {
     volatile uint8_t *sram = (volatile uint8_t*)0x0E000000;
 
