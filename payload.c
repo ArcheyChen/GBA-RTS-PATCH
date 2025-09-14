@@ -699,24 +699,6 @@ __attribute__((target("arm"))) void load_from_flash()
         : "memory"
     );
 }
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // 检查RTS存档标志是否有效
 __attribute__((target("arm"))) bool check_rts_save_flag(void)

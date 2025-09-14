@@ -35,11 +35,9 @@
 
 FILE *romfile;
 FILE *outfile;
-FILE *rtsfile;
 uint32_t romsize;
 uint8_t rom[0x02000000];
 char signature[] = "<3 from Maniac";
-#define RTS_SIZE (448 * 1024)  // 448KB
 
 // 从gba-auto-batteryless-patcher移植的存档函数签名
 static unsigned char write_sram_signature[] = { 0x30, 0xB5, 0x05, 0x1C, 0x0C, 0x1C, 0x13, 0x1C, 0x0B, 0x4A, 0x10, 0x88, 0x0B, 0x49, 0x08, 0x40};
@@ -113,15 +111,14 @@ int main(int argc, char **argv)
     puts("本代码按“原样”提供，不对其适用性、功能性或适合任何特定用途作出任何明示或暗示的保证。使用本代码所产生的任何后果和风险由使用者自行承担，作者不承担任何责任。");
     puts("This code is provided 'as is', without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the authors be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the code or the use or other dealings in the code.");
     puts("============================================================");
-    // 检查参数数量，必须为2或3（程序名+ROM文件名+可选的RTS文件）
+    // 检查参数数量，必须为2（程序名+ROM文件名）
     puts("GBA RTS Patcher - Written by Ausar (Based on Maniac's batteryless patcher)");
-    if (argc != 2 && argc != 3)
+    if (argc != 2)
     {
-        puts("Usage: patcher <rom.gba> [save.rts]");
+        puts("Usage: patcher <rom.gba>");
         puts("       rom.gba  - GBA ROM file to patch");
-        puts("       save.rts - Optional 448KB RTS save file to embed");
         puts("Or: just drag and drop a .gba file onto this executable");
-        puts("       The output will be <rom_keypad.gba>");
+        puts("       The output will be <rom_rts_keypad.gba>");
         puts("最简单的用法是直接拖放一个.gba文件到这个程序上");
         press_any_key();
         return 1;
@@ -250,47 +247,16 @@ int main(int argc, char **argv)
         printf("No save function signatures found. Using default size: 128KB\n");
     }
 
-    
-    // 获取用户输入的write buffer大小
-    puts("Input write buffer size (0-4095, 0 for default):");
-    int wbuf = 0;
-    scanf("%d", &wbuf);
-    if (wbuf < 0 || wbuf > 0xFFF)
-    {
-        puts("Invalid write buffer size, defaulting to 0");
-        wbuf = 0;
-    }
-
-
     printf("Final save configuration:\n");
     printf("  Save size: %u KB (0x%X bytes)\n", detected_save_size / 1024, detected_save_size);
-    printf("  Write buffer: %d bytes\n", wbuf);
 
-    // 获取sector size
-    puts("Input sector size (0x10000-0x40000, 0x10000 for default):");
-    int sector_size = 0x10000;
-    scanf("%x", &sector_size);
-    if (sector_size < 0x10000 || sector_size > 0x40000)
-    {
-        puts("Invalid sector size, defaulting to 0x10000");
-        sector_size = 0x10000;
-    }
-
-    // 查找插入payload的位置：要求在某个256KB扇区前有一段全0或全0xFF的空间
-    // 需要预留448KB+save_size空间供后续扩展使用
-    int reserved_space = 0x70000; // 448KB
-    reserved_space += detected_save_size;
-    if (reserved_space % sector_size) {
-        reserved_space -= reserved_space % sector_size;
-        reserved_space += sector_size;
-        printf("padding reserved space to 0x%x\n", reserved_space);
-    }
+    // 查找插入payload的位置：在ROM末尾找到足够的空间放置payload
     int payload_base;
-    for (payload_base = romsize - reserved_space - payload_bin_len; payload_base >= 0; payload_base -= 0x40000)
+    for (payload_base = romsize - payload_bin_len; payload_base >= 0; payload_base -= 0x40000)
     {
         int is_all_zeroes = 1;
         int is_all_ones = 1;
-        for (int i = 0; i < reserved_space + payload_bin_len; ++i)
+        for (int i = 0; i < payload_bin_len; ++i)
         {
             if (rom[payload_base+i] != 0)
             {
@@ -310,7 +276,7 @@ int main(int argc, char **argv)
     if (payload_base < 0)
     {
         puts("ROM too small to install payload.");
-        if (romsize + reserved_space > 0x2000000)
+        if (romsize + payload_bin_len > 0x2000000)
         {
             puts("ROM already max size. Cannot expand. Cannot install payload");
             press_any_key();
@@ -319,8 +285,8 @@ int main(int argc, char **argv)
         else
         {
             puts("Expanding ROM");
-            romsize += reserved_space;
-            payload_base = romsize - reserved_space - payload_bin_len;
+            romsize += payload_bin_len;
+            payload_base = romsize - payload_bin_len;
         }
     }
 
@@ -331,63 +297,7 @@ int main(int argc, char **argv)
     // 拷贝payload_bin到ROM指定位置
     memcpy(rom + payload_base, payload_bin, payload_bin_len);
     struct PayloadHeader *header = (struct PayloadHeader*)&rom[payload_base];
-    header->rts_size = reserved_space;
     header->save_size = detected_save_size;
-    header->wbuf_size = wbuf;
-
-    printf("  Combined rts_size field: 0x%08X\n", header->rts_size);
-    // 计算并输出SRAM保存空间的基址（在payload之后）
-    uint32_t sram_save_base = payload_base + payload_bin_len;
-    printf("SRAM save space offset: 0x%X\n", sram_save_base);
-    printf("SRAM save space ROM address: 0x%08X\n", 0x08000000 + sram_save_base);
-    printf("Reserved space size: %u KB (0x%X bytes)\n", reserved_space / 1024, reserved_space);
-    
-    // 处理可选的RTS文件
-    if (argc == 3)
-    {
-        // 检查RTS文件扩展名
-        size_t rtsfilename_len = strlen(argv[2]);
-        if (rtsfilename_len < 4 || strcasecmp(argv[2] + rtsfilename_len - 4, ".rts"))
-        {
-            puts("Second file does not have .rts extension.");
-            press_any_key();
-            return 1;
-        }
-        
-        // 打开RTS文件
-        if (!(rtsfile = fopen(argv[2], "rb")))
-        {
-            puts("Could not open RTS file");
-            puts(strerror(errno));
-            press_any_key();
-            return 1;
-        }
-        
-        // 检查文件大小必须是448KB
-        fseek(rtsfile, 0, SEEK_END);
-        long rtssize = ftell(rtsfile);
-        if (rtssize != RTS_SIZE)
-        {
-            printf("RTS file size must be exactly 448KB (458752 bytes), but got %ld bytes\n", rtssize);
-            fclose(rtsfile);
-            press_any_key();
-            return 1;
-        }
-        
-        // 读取RTS文件内容到ROM的存档位置
-        fseek(rtsfile, 0, SEEK_SET);
-        if (fread(rom + sram_save_base, 1, RTS_SIZE, rtsfile) != RTS_SIZE)
-        {
-            puts("Failed to read RTS file");
-            fclose(rtsfile);
-            press_any_key();
-            return 1;
-        }
-        fclose(rtsfile);
-        
-        printf("RTS file embedded successfully at offset 0x%X\n", sram_save_base);
-        printf("RTS covers sectors 0-6 (448KB) after payload\n");
-    }
 
     // 修改ROM入口点，使其跳转到payload中的patched_entrypoint
     // 并将原入口点地址写入payload的original_entrypoint字段（payload.c头部）
@@ -414,10 +324,10 @@ int main(int argc, char **argv)
     // 修改ROM头部的入口跳转指令，使其跳转到payload的patched_entrypoint
     ((uint32_t*)rom)[0] = 0xea000000 | (new_entrypoint_address - 0x08000008) >> 2;
 
-    // 写入新文件名，包含write buffer大小信息
+    // 写入新文件名
     argv[1][strlen(argv[1]) - 4] = '\0'; // 移除.gba扩展名
     char new_filename[FILENAME_MAX];
-    sprintf(new_filename, "%s_rts_keypad_wb%d.gba", argv[1], wbuf);
+    sprintf(new_filename, "%s_rts_keypad.gba", argv[1]);
 
     // 写入补丁后的ROM到新文件
     if (!(outfile = fopen(new_filename, "wb")))
