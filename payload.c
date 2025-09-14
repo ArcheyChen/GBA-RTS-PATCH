@@ -267,7 +267,7 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "mov r2, #0xDF\n"                // 系统模式
         "msr cpsr_cf, r2\n"
         "nop\n"
-        "sub sp, sp, #52\n"              // 在系统栈上分配52字节
+        "sub sp, sp, #56\n"              // 在系统栈上分配56字节（52字节寄存器+4字节地址）
         "mov r2, sp\n"                   // r2 = 系统栈缓冲区地址
         
         // 第三步：切换回IRQ模式保存IRQ寄存器
@@ -288,10 +288,11 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "mov r3, #0xDF\n"                // 系统模式
         "msr cpsr_cf, r3\n"
         "nop\n"
-        "mov r0, sp\n"                   // r0 = 系统模式SP (注意：已经减了52)
-        "add r0, r0, #52\n"              // 恢复原始系统SP值
+        "mov r0, sp\n"                   // r0 = 系统模式SP (注意：已经减了56)
+        "add r0, r0, #56\n"              // 恢复原始系统SP值
         "add r3, r2, #0x2C\n"            // r3 = 缓冲区 + 0x2C偏移
         "stmia r3!, {r0, lr}\n"          // 保存系统模式原始SP和LR
+        "str r2, [r2, #0x34]\n"          // 在偏移0x34保存缓冲区地址本身
         
         // 第六步：切换回IRQ模式调用keypad_process
         "msr cpsr_cf, r1\n"              // 切换回IRQ模式
@@ -306,22 +307,23 @@ __attribute__((naked, target("arm"))) void keypad_irq_handler(void)
         "mov r3, #0xDF\n"                // 切换到系统模式恢复栈
         "msr cpsr_cf, r3\n"
         "nop\n"
-        "add sp, sp, #52\n"              // 恢复系统栈指针
+        "add sp, sp, #56\n"              // 恢复系统栈指针（56字节）
         "msr cpsr_cf, r1\n"              // 直接恢复原CPSR (IRQ模式)
         "nop\n"
         
         "pop {pc}\n"                     // 返回到BIOS
     );
 }
-/*此时临时缓冲区内容:（系统栈分配，52字节）
+/*此时临时缓冲区内容:（系统栈分配，56字节）
 
 0x00 (4字节): IRQ模式下的SPSR寄存器
-0x04 (32字节): IRQ模式下的r4-r11寄存器  
+0x04 (32字节): IRQ模式下的r4-r11寄存器
 0x24 (4字节): IRQ模式下的sp寄存器
 0x28 (4字节): IRQ模式下的lr寄存器
 0x2C (4字节): 系统模式的SP（原始值）
 0x30 (4字节): 系统模式的LR
-总共使用: 4+32+4+4+4+4 = 52字节
+0x34 (4字节): 缓冲区自身地址（用于恢复时定位）
+总共使用: 4+32+4+4+4+4+4 = 56字节
 缓冲区分配在系统模式栈上，避免IRQ栈溢出
 音频寄存器在save_misc_to_flash中直接从硬件读取并写入SRAM
 */
@@ -604,44 +606,15 @@ __attribute__((target("arm"))) void load_from_flash()
     io_base[0x0202 / 2] = 0;
 
     ////////////////////////////////////////////////////////////////////////////////////////
-    // 关键步骤：将cpu_regs从SRAM复制到EWRAM末尾，便于后续32位访问
+    // 关键步骤：从SRAM读取缓冲区地址，准备后续恢复
     ////////////////////////////////////////////////////////////////////////////////////////
 
-    // 将52字节的cpu_regs从SRAM Bank 7复制到EWRAM末尾（0x0203FE00）
-    // 这样后面可以用32位访问恢复寄存器
-    volatile uint8_t *sram_cpu_regs = sram_bank7 + 0x8400;
-    volatile uint8_t *ewram_buffer = (volatile uint8_t*)0x0203FE00;
-    for (uint32_t i = 0; i < 52; i++) {
-        ewram_buffer[i] = sram_cpu_regs[i];
-    }
+    // 从SRAM Bank 7的0x8434位置读取缓冲区地址（56字节中的最后4字节）
+    volatile uint8_t *sram_buf_addr = sram_bank7 + 0x8434;
+    uint32_t buffer_addr = sram_buf_addr[0] | (sram_buf_addr[1] << 8) |
+                          (sram_buf_addr[2] << 16) | (sram_buf_addr[3] << 24);
 
-    // 恢复系统模式SP和LR寄存器 - 从EWRAM缓冲区读取（已经复制好了）
-    // 这需要切换到系统模式，恢复寄存器，然后切换回来
-    volatile uint32_t *ewram_cpu_regs = (volatile uint32_t*)0x0203FE00;
-    asm volatile(
-        "mrs r0, cpsr\n"                // 保存当前CPSR
-
-        // 从EWRAM缓冲区读取SPSR（32位访问）
-        "ldr r7, %[cpu_regs]\n"         // r7 = EWRAM缓冲区地址
-        "ldr r2, [r7]\n"                // 直接读取SPSR（32位）
-        "msr spsr_cxsf, r2\n"           // 恢复SPSR irq状态
-
-        "mov r1,#0xDF\n"                // 切换到系统模式
-        "msr cpsr_cf, r1\n"
-        "nop\n"
-
-        "add r7, r7, #0x2C\n"           // 跳到系统模式SP/LR位置
-        "ldmia r7!, {r13-r14}\n"        // 直接恢复SP和LR（32位访问）
-
-        "msr cpsr_cf, r0\n"             // 恢复CPSR,即，切换回到IRQ模式
-        "nop\n"
-        :
-        : [cpu_regs] "m" (ewram_cpu_regs)
-        : "r0", "r1", "r2", "r7", "memory"
-    );
-    
-    ////////////////////////////////////////////////////////////////////////////////////////
-    // 音频寄存器恢复 - 直接从Flash恢复到硬件寄存器
+    // 音频寄存器恢复 - 直接从SRAM恢复到硬件寄存器
     ////////////////////////////////////////////////////////////////////////////////////////
     
     // 恢复音频寄存器 (0x4000060-0x4000090) - 从Bank 7的0x9060偏移
@@ -663,11 +636,12 @@ __attribute__((target("arm"))) void load_from_flash()
     // 切换到Bank 6来读取IWRAM数据
     SRAM_BANK_SEL = IWRAM_PALETTE_SECTOR;
 
-    // 恢复IRQ模式的寄存器并跳转到原始中断处理程序
+    // 恢复IWRAM、SPSR、系统模式SP/LR、IRQ模式寄存器，并跳转到原始中断处理程序
     asm volatile(
+        // 将buffer_addr加载到寄存器
+        "ldr r12, %[buf_addr]\n"          // r12 = 缓冲区地址（IWRAM中的位置）
 
         // 恢复IWRAM - 从SRAM Bank 6读取（Bank已经设置好）
-        "ldr r12, %[cpu_regs]\n"            // r12 = EWRAM缓冲区地址（用于后续恢复寄存器）
         "mov r2, #0x0E000000\n"             // r2 = SRAM基地址
         "mov r3, #0x03000000\n"             // r3 = IWRAM地址
         "mov r4, #0x8000\n"                 // r4 = 32KB计数器
@@ -683,19 +657,35 @@ __attribute__((target("arm"))) void load_from_flash()
         "mov r6, #0\n"
         "strh r6, [r5]\n"                   // SRAM_BANK_SEL = 0
 
-        // 从EWRAM缓冲区恢复寄存器（已经复制到0x0203FE00）
-        // r12已经指向EWRAM缓冲区
-        "add r12, r12, #4\n"                // 跳过SPSR（从+4开始）
-        "ldmia r12!, {r4-r11,sp,lr}\n"      // 直接恢复r4-r11,sp,lr（32位访问）
+        // IWRAM已恢复，现在从缓冲区恢复SPSR、系统模式SP/LR
+        // r12 = 缓冲区地址（在IWRAM中）
+        "mrs r0, cpsr\n"                    // 保存当前CPSR
 
-        // r3需要单独处理（ldmia不能包含r3因为r12在r3之后）
-        "ldr r12, %[cpu_regs]\n"            // 重新加载EWRAM缓冲区地址
+        // 恢复SPSR（32位访问）
+        "ldr r2, [r12]\n"                   // 读取SPSR（32位）
+        "msr spsr_cxsf, r2\n"               // 恢复SPSR irq状态
+
+        // 切换到系统模式恢复SP和LR
+        "mov r1, #0xDF\n"                   // 系统模式
+        "msr cpsr_cf, r1\n"
+        "nop\n"
+        "add r7, r12, #0x2C\n"              // 跳到系统模式SP/LR位置
+        "ldmia r7!, {r13-r14}\n"            // 恢复SP和LR（32位访问）
+        "msr cpsr_cf, r0\n"                 // 恢复CPSR，切换回IRQ模式
+        "nop\n"
+
+        // 从缓冲区恢复IRQ模式寄存器
+        "add r12, r12, #4\n"                // 跳过SPSR（从+4开始）
+        "ldmia r12!, {r4-r11,sp,lr}\n"      // 恢复r4-r11,sp,lr（32位访问）
+
+        // r3需要单独处理
+        "ldr r12, %[buf_addr]\n"            // 重新加载缓冲区地址
         "ldr r3, [r12, #4]\n"               // 恢复r3（位于偏移4）
         "\n"
         "mov r0, #0x04000000\n"
         "ldr pc, [r0, #-(0x04000000-0x03FFFFF4)]\n"  // 跳转到原始IRQ处理程序
         :
-        : [cpu_regs] "m" (ewram_cpu_regs)
+        : [buf_addr] "m" (buffer_addr)
         : "memory"
     );
 }
@@ -805,9 +795,9 @@ __attribute__((target("arm"))) void save_misc_to_flash(int flash_type_index __at
         sram_oam[i] = oam[i];
     }
 
-    // 3. 复制cpu_regs到SRAM的0x8400偏移，然后保存rts_temp_regs结构体
+    // 3. 复制cpu_regs到SRAM的0x8400偏移（现在是56字节，包含缓冲区地址）
     volatile uint8_t *sram_spend = sram + 0x8400;
-    for (uint32_t i = 0; i < 52; i++) {  // 大小是52字节
+    for (uint32_t i = 0; i < 56; i++) {  // 大小是56字节（52字节寄存器+4字节地址）
         sram_spend[i] = cpu_regs_addr[i];
     }
 
